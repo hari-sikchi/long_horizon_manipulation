@@ -3,7 +3,6 @@ import itertools
 import numpy as np
 import torch
 from torch.optim import Adam
-import d4rl
 import gym
 import time
 import core as core
@@ -46,7 +45,7 @@ class ReplayBuffer:
         batch = dict(obs=self.obs_buf[idxs],
                      obs2=self.obs2_buf[idxs],
                      goal = self.goal_buf[idxs],
-                     horizon = self.horizon[idx],
+                     horizon = self.horizon[idxs],
                      act=self.act_buf[idxs],
                      rew=self.rew_buf[idxs],
                      done=self.done_buf[idxs])
@@ -202,7 +201,7 @@ class TDM:
         self.pi_optimizer = Adam(self.ac.pi.parameters(), lr=self.p_lr)
         self.q_optimizer = Adam(self.q_params, lr=self.lr)
         self.num_test_episodes = num_test_episodes
-        self.max_ep_len = max_ep_len
+        self.max_ep_len = self.env._max_episode_length
         self.epochs= epochs
         self.steps_per_epoch = steps_per_epoch
         self.update_after = update_after
@@ -213,6 +212,7 @@ class TDM:
         # Set up model saving
         self.logger.setup_pytorch_saver(self.ac)
         self.max_horizon = 10
+        self.eval_freq= 100
 
 
 
@@ -232,8 +232,8 @@ class TDM:
             q1_pi_targ = self.ac_targ.q1(torch.cat([o2,g,(h-1).view(-1,1)],axis=1), a2)
             q2_pi_targ = self.ac_targ.q2(torch.cat([o2,g,(h-1).view(-1,1)],axis=1), a2)
             q_pi_targ = torch.min(q1_pi_targ, q2_pi_targ)
-            backup = (h==0)*(-1)*torch.abs(o2-g) + (h!=0)*q_pi_targ
-            backup = r + self.gamma * (1 - d) * (q_pi_targ - self.alpha * logp_a2)
+            backup = (h==0).view(-1,1)*(-1)*torch.abs(o2-g) + (h!=0).view(-1,1)*q_pi_targ
+            # backup = r + self.gamma * (1 - d) * (q_pi_targ - self.alpha * logp_a2)
 
         # MSE loss against Bellman backup
         loss_q1 = ((q1 - backup)**2).mean()
@@ -258,7 +258,7 @@ class TDM:
         q_pi = torch.min(q1_pi, q2_pi)
 
 
-        loss_pi = (self.alpha * logp_pi - q_pi).mean()
+        loss_pi = (self.alpha * logp_pi.view(-1,1) - q_pi.sum(1)).mean()
         # Useful info for logging
         pi_info = dict(LogPi=logp_pi.detach().numpy())
 
@@ -312,6 +312,10 @@ class TDM:
         return self.ac.act(torch.as_tensor(o, dtype=torch.float32), 
                       deterministic)
 
+    def get_q_value(self,o,a):
+        return self.ac.q1(torch.as_tensor(o, dtype=torch.float32), 
+                      torch.as_tensor(a, dtype=torch.float32))
+
     def test_agent(self):
         for j in range(self.num_test_episodes):
             o, d, ep_ret, ep_len = self.test_env.reset(), False, 0, 0
@@ -322,24 +326,49 @@ class TDM:
                 ep_len += 1
             self.logger.store(TestEpRet=ep_ret, TestEpLen=ep_len)
 
+    def test_tdm(self):
+        for j in range(self.num_test_episodes):
+            goal = self.env.sample_random_goal()    
+            horizon = np.random.randint(1,self.max_horizon)
+            q_values = []
+            o, d, ep_ret, ep_len = self.test_env.reset(), False, 0, 0
+            for t in range(horizon,0,-1):   
+                a = self.get_action(np.concatenate((o,goal,np.array([t]))),True)
+                q_val = self.get_q_value(np.concatenate((o,goal,np.array([t]))).reshape(1,-1), a.reshape(1,-1)).detach().cpu().numpy()
+                q_values.append(q_val)
+                o, r, d, _ = self.test_env.step(a)
+                ep_ret += r
+
+            q_errors = np.abs(np.array(q_values).squeeze()-np.abs(o-goal).reshape(1,-1))
+            self.logger.store(TDMError=np.sum(q_errors),TestEpRet=ep_ret)
+            
+            
+            # while not(d or (ep_len == self.max_ep_len)):
+            #     # Take deterministic actions at test time 
+            #     o, r, d, _ = self.test_env.step(self.get_action(o, True))
+            #     ep_ret += r
+            #     ep_len += 1
+            # self.logger.store(TestEpRet=ep_ret, TestEpLen=ep_len) 
+
+
     def run(self):
         total_steps = self.steps_per_epoch * self.epochs
         total_episodes = 10000
         start_time = time.time()
         o, ep_ret, ep_len = self.env.reset(), 0, 0
-
+        timesteps = 0
         for e in range(total_episodes):
             # Sample a goal
             goal = self.env.sample_random_goal()
             # Sample a horizon
             horizon = np.random.randint(1,self.max_horizon)
-            
+            # print("Training episode: {}".format(e))
             for t in range(horizon,1,-1):
                 # Until start_steps have elapsed, randomly sample actions
                 # from a uniform distribution for better exploration. Afterwards, 
                 # use the learned policy. 
-                if t > self.start_steps:
-                    a = self.get_action(np.concatenate((o,g,np.array([t]))))
+                if timesteps > self.start_steps:
+                    a = self.get_action(np.concatenate((o,goal,np.array([t]))))
                 else:
                     a = self.env.action_space.sample()                
 
@@ -347,13 +376,8 @@ class TDM:
                 o2, r, d, _ = self.env.step(a)
                 ep_ret += r
                 ep_len += 1
+                timesteps+=1
             
-            
-                # Ignore the "done" signal if it comes from hitting the time
-                # horizon (that is, when it's an artificial terminal signal
-                # that isn't based on the agent's state)
-                if(t==1):
-                    d= True
 
                 # Store experience to replay buffer
                 self.replay_buffer.store(o, a, r, o2, goal, t, d)
@@ -362,30 +386,30 @@ class TDM:
                 # most recent observation!
                 o = o2
 
-                # End of trajectory handling
-                if d or (ep_len == self.max_ep_len):
-                    o, ep_ret, ep_len = self.env.reset(), 0, 0
+                # # End of trajectory handling
+                # if d or (ep_len == self.max_ep_len):
+                #     o, ep_ret, ep_len = self.env.reset(), 0, 0
 
                 # Update handling
-                if t >= self.update_after and t % self.update_every == 0:
+                if timesteps >= self.update_after and timesteps % self.update_every == 0:
                     for j in range(self.update_every):
                         batch = self.replay_buffer.sample_batch(self.batch_size)
                         self.update(data=batch,update_timestep=t)
 
                 # End of epoch handling
-                if (t+1) % self.steps_per_epoch == 0:
-                    epoch = (t+1) // self.steps_per_epoch
+                if (timesteps+1) % self.steps_per_epoch == 0:
+                    epoch = timesteps//self.steps_per_epoch
 
                     # Save model
                     # if (epoch % save_freq == 0) or (epoch == epochs):
                     #     logger.save_state({'env': env}, None)
 
                     # Test the performance of the deterministic version of the agent.
-                    self.test_agent()
+                    self.test_tdm()
                     # Log info about epoch
                     self.logger.log_tabular('Epoch', epoch)
                     self.logger.log_tabular('TestEpRet', with_min_and_max=True)
-                    self.logger.log_tabular('TestEpLen', average_only=True)
+                    self.logger.log_tabular('TDMError', with_min_and_max=True)
                     self.logger.log_tabular('TotalUpdates', t)
                     self.logger.log_tabular('Q1Vals', with_min_and_max=True)
                     self.logger.log_tabular('Q2Vals', with_min_and_max=True)
