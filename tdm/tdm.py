@@ -56,7 +56,7 @@ class TDM:
 
     def __init__(self, env_fn, actor_critic=core.MLPtdmActorCritic, ac_kwargs=dict(), seed=0, 
         steps_per_epoch=2000, epochs=1000, replay_size=int(1500000), gamma=0.99, 
-        polyak=0.995, lr=1e-3, p_lr=1e-3, alpha=0.2, batch_size=100, start_steps=1000, 
+        polyak=0.995, lr=1e-3, p_lr=1e-3, alpha=0.0, batch_size=100, start_steps=1000, 
         update_after=1000, update_every=50, num_test_episodes=10, max_ep_len=1000, 
         logger_kwargs=dict(), save_freq=1, algo='SAC'):
         """
@@ -219,7 +219,7 @@ class TDM:
     # Set up function for computing SAC Q-losses
     def compute_loss_q(self, data):
         o, a, r, o2, d = data['obs'], data['act'], data['rew'], data['obs2'], data['done']
-        g,h= data['goal'],data['horizon']
+        g,h = data['goal'],data['horizon']
         q1 = self.ac.q1(torch.cat([o,g,h.view(-1,1)],axis=1),a)
         q2 = self.ac.q2(torch.cat([o,g,h.view(-1,1)],axis=1),a)
 
@@ -339,21 +339,14 @@ class TDM:
                 o, r, d, _ = self.test_env.step(a)
                 ep_ret += r
 
-            q_errors = np.abs(np.array(q_values).squeeze()-np.abs(o-goal).reshape(1,-1))
+            q_errors = np.abs(np.array(q_values).squeeze()+np.abs(o-goal).reshape(1,-1))
             self.logger.store(TDMError=np.sum(q_errors),TestEpRet=ep_ret)
             
-            
-            # while not(d or (ep_len == self.max_ep_len)):
-            #     # Take deterministic actions at test time 
-            #     o, r, d, _ = self.test_env.step(self.get_action(o, True))
-            #     ep_ret += r
-            #     ep_len += 1
-            # self.logger.store(TestEpRet=ep_ret, TestEpLen=ep_len) 
 
 
     def run(self):
         total_steps = self.steps_per_epoch * self.epochs
-        total_episodes = 10000
+        total_episodes = 100000
         start_time = time.time()
         o, ep_ret, ep_len = self.env.reset(), 0, 0
         timesteps = 0
@@ -363,7 +356,7 @@ class TDM:
             # Sample a horizon
             horizon = np.random.randint(1,self.max_horizon)
             # print("Training episode: {}".format(e))
-            for t in range(horizon,1,-1):
+            for t in range(horizon,0,-1):
                 # Until start_steps have elapsed, randomly sample actions
                 # from a uniform distribution for better exploration. Afterwards, 
                 # use the learned policy. 
