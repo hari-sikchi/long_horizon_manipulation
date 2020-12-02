@@ -57,7 +57,7 @@ class TDM:
     def __init__(self, env_fn, actor_critic=core.MLPtdmActorCritic, ac_kwargs=dict(), seed=0, 
         steps_per_epoch=2000, epochs=1000, replay_size=int(1500000), gamma=0.99, 
         polyak=0.995, lr=1e-3, p_lr=1e-3, alpha=0.0, batch_size=100, start_steps=1000, 
-        update_after=1000, update_every=50, num_test_episodes=10, max_ep_len=1000, 
+        update_after=1000, update_every=50, num_test_episodes=20, max_ep_len=1000, 
         logger_kwargs=dict(), save_freq=1, algo='SAC'):
         """
         Soft Actor-Critic (SAC)
@@ -231,7 +231,8 @@ class TDM:
             # Target Q-values
             q1_pi_targ = self.ac_targ.q1(torch.cat([o2,g,(h-1).view(-1,1)],axis=1), a2)
             q2_pi_targ = self.ac_targ.q2(torch.cat([o2,g,(h-1).view(-1,1)],axis=1), a2)
-            q_pi_targ = torch.min(q1_pi_targ, q2_pi_targ)
+            q_pi_targ = q1_pi_targ
+            # q_pi_targ = torch.max(q1_pi_targ, q2_pi_targ)
             backup = (h==0).view(-1,1)*(-1)*torch.abs(o2-g) + (h!=0).view(-1,1)*q_pi_targ
             # backup = r + self.gamma * (1 - d) * (q_pi_targ - self.alpha * logp_a2)
 
@@ -328,7 +329,7 @@ class TDM:
 
     def test_tdm(self):
         for j in range(self.num_test_episodes):
-            goal = self.env.sample_random_goal()    
+            goal = self.test_env.sample_random_goal()    
             horizon = np.random.randint(1,self.max_horizon)
             q_values = []
             o, d, ep_ret, ep_len = self.test_env.reset(), False, 0, 0
