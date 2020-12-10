@@ -231,9 +231,9 @@ class TDM:
             # Target Q-values
             q1_pi_targ = self.ac_targ.q1(torch.cat([o2,g,(h-1).view(-1,1)],axis=1), a2)
             q2_pi_targ = self.ac_targ.q2(torch.cat([o2,g,(h-1).view(-1,1)],axis=1), a2)
-            q_pi_targ = q1_pi_targ
+            q_pi_targ = torch.min(q1_pi_targ,q2_pi_targ)
             # q_pi_targ = torch.max(q1_pi_targ, q2_pi_targ)
-            backup = (h==0).view(-1,1)*(-1)*torch.abs(o2-g) + (h!=0).view(-1,1)*q_pi_targ
+            backup = ((h-1)==0).view(-1,1)*(-1)*torch.abs(o2-g) + ((h-1)!=0).view(-1,1)*q_pi_targ
             # backup = r + self.gamma * (1 - d) * (q_pi_targ - self.alpha * logp_a2)
 
         # MSE loss against Bellman backup

@@ -22,8 +22,9 @@ class MadduxEnv(gym.Env):
         super(MadduxEnv, self).__init__()
 
         # maddux env
-        obstacles = [Obstacle([1, 2, 1], [2, 2.5, 1.5]),
-                     Obstacle([3, 2, 1], [4, 2.5, 1.5])]
+        obstacles = []
+        # obstacles = [Obstacle([1, 2, 1], [2, 2.5, 1.5]),
+        #              Obstacle([3, 2, 1], [4, 2.5, 1.5])]
         ball = Ball([2.5, 2.5, 2.0], 0.25)
 
         # Create a series of links (each link has one joint)
@@ -122,6 +123,7 @@ class MadduxEnv(gym.Env):
 
 
     def reset(self):
+        self.reset_ang = self.observation_space.sample()
         # reset joint angles
         for i in range(self.num_links):
             self.mad_env.robot.update_link_angle(i, self.reset_ang[i], True)
