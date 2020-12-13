@@ -8,6 +8,7 @@ import time
 import core as core
 from utils.logx import EpochLogger
 import torch.nn.functional as F
+import math
 device = torch.device("cpu")
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -113,8 +114,8 @@ class EpisodicReplayBuffer:
                         (1-true_goal_binary[i])*self.obs_buf[episode_idx[i],future_goals[i]*self.obs_dim:(future_goals[i]+1)*self.obs_dim]
             
             horizon[i] = true_goal_binary[i] * self.horizon[episode_idx[i],state_idx[i]] + (1-true_goal_binary[i])*rand_horizons[i]
-            rew = self.rew[episode_idx[i],state_idx[i]]
-            done = self.done[episode_idx[i],state_idx[i]]
+            rew = self.rew_buf[episode_idx[i],state_idx[i]]
+            done = self.done_buf[episode_idx[i],state_idx[i]]
 
         batch = dict(obs=obs,
                      obs2=obs2,
@@ -418,7 +419,7 @@ class TDM:
                 q_values.append(q_val)
                 o, r, d, _ = self.test_env.step(a)
                 ep_ret += r
-                if((o-goal).sum()<0.1):
+                if((o-goal).sum()<(0.1*self.obs_dim[0])):
                     goal_reached=True
             if(goal_reached):
                 goal_reaches+=1
@@ -481,13 +482,14 @@ class TDM:
                     epoch = timesteps//self.steps_per_epoch
 
                     # Save model
-                    # if (epoch % save_freq == 0) or (epoch == epochs):
-                    #     logger.save_state({'env': env}, None)
+                    
+                    self.logger.save_state({'env': self.env}, None)
 
                     # Test the performance of the deterministic version of the agent.
                     self.test_tdm()
                     # Log info about epoch
                     self.logger.log_tabular('Epoch', epoch)
+                    self.logger.log_tabular('Episodes', e)
                     self.logger.log_tabular('TestEpRet', with_min_and_max=True)
                     self.logger.log_tabular('TDMError', with_min_and_max=True)
                     self.logger.log_tabular('GoalReach', average_only=True)
