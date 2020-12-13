@@ -8,13 +8,10 @@ import time
 import core as core
 from utils.logx import EpochLogger
 import torch.nn.functional as F
-import math
 device = torch.device("cpu")
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# TODO: Trajectory based replay buffer
 
-#
 class ReplayBuffer:
     """
     A simple FIFO experience replay buffer for SAC agents.
@@ -52,11 +49,88 @@ class ReplayBuffer:
                      done=self.done_buf[idxs])
         return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in batch.items()}
 
+class EpisodicReplayBuffer:
+    """
+    A simple FIFO experience replay buffer for SAC agents.
+    """
 
+    def __init__(self, obs_dim, act_dim, size, max_horizon):
+        self.obs_dim = obs_dim
+        self.act_dim = act_dim
+
+        self.max_horizon = max_horizon
+        self.obs_buf = np.zeros(core.combined_shape(size, obs_dim*max_horizon), dtype=np.float32)
+        self.obs2_buf = np.zeros(core.combined_shape(size, obs_dim*max_horizon), dtype=np.float32)
+        self.goal_buf = np.zeros(core.combined_shape(size, act_dim*max_horizon), dtype=np.float32)
+        self.horizon = np.zeros((size,max_horizon), dtype=np.float32)
+        self.act_buf = np.zeros(core.combined_shape(size, act_dim*max_horizon), dtype=np.float32)
+        self.rew_buf = np.zeros((size,max_horizon), dtype=np.float32)
+        self.max_horizon_buf = np.zeros((size), dtype=np.float32)
+        self.done_buf = np.zeros((size,max_horizon), dtype=np.float32)
+        self.episode_ptr, self.ptr, self.size, self.max_size = 0, 0, 0, size
+
+    def store(self, obs, act, rew, next_obs, goal, horizon, done):
+        self.obs_buf[self.episode_ptr, self.ptr*self.obs_dim:(self.ptr+1)*self.obs_dim] = obs
+        self.obs2_buf[self.episode_ptr,self.ptr*self.obs_dim:(self.ptr+1)*self.obs_dim] = next_obs
+        self.goal_buf[self.episode_ptr,self.ptr*self.obs_dim:(self.ptr+1)*self.obs_dim] = goal
+        self.horizon[self.episode_ptr,self.ptr] = horizon
+        self.act_buf[self.episode_ptr,self.ptr*self.act_dim:(self.ptr+1)*self.act_dim] = act
+        self.rew_buf[self.episode_ptr,self.ptr] = rew
+        self.done_buf[self.episode_ptr,self.ptr] = done
+        self.ptr = (self.ptr+1) % self.max_size
+        
+
+    def finish_episode(self, max_horizon):
+        self.max_horizon_buf[self.episode_ptr]=max_horizon
+        self.episode_ptr+=1
+        self.ptr = 0
+        self.size = (self.size+1) % self.max_size
+
+
+    # Sample with goal relabelling
+    def sample_batch(self, batch_size=32, true_goal_ratio = 0.5):
+
+        episode_idx = np.random.randint(0, self.size, size=batch_size)
+        random_floats = (np.random.uniform(size=batch_size).reshape(-1) * self.max_horizon_buf[episode_idx])
+        state_idx = random_floats.astype(int)
+        future_goals = (np.random.uniform(size=batch_size).reshape(-1) * (self.max_horizon_buf[episode_idx]-state_idx)+state_idx).astype(int)
+        future_goals = np.maximum(future_goals,self.max_horizon_buf[episode_idx]-1).astype(int)
+        rand_horizons = np.random.randint(1,self.max_horizon,batch_size)
+        true_goal_binary = np.random.uniform(size=batch_size)>true_goal_ratio
+
+        obs = np.zeros((batch_size,self.obs_dim))
+        obs2 = np.zeros((batch_size,self.obs_dim))
+        goal = np.zeros((batch_size,self.obs_dim))
+        horizon = np.zeros((batch_size))
+        act = np.zeros((batch_size,self.act_dim))
+        rew = np.zeros((batch_size))
+        done = np.zeros((batch_size))
+        for i in range(batch_size):
+            obs[i,:] = self.obs_buf[episode_idx[i],state_idx[i]*self.obs_dim:(state_idx[i]+1)*self.obs_dim]
+            obs2[i,:] = self.obs2_buf[episode_idx[i],state_idx[i]*self.obs_dim:(state_idx[i]+1)*self.obs_dim]
+            act[i,:] = self.act_buf[episode_idx[i],state_idx[i]*self.act_dim:(state_idx[i]+1)*self.act_dim]
+            goal[i,:] = true_goal_binary[i] * self.goal_buf[episode_idx[i],state_idx[i]*self.obs_dim:(state_idx[i]+1)*self.obs_dim]+\
+                        (1-true_goal_binary[i])*self.obs_buf[episode_idx[i],future_goals[i]*self.obs_dim:(future_goals[i]+1)*self.obs_dim]
+            
+            horizon[i] = true_goal_binary[i] * self.horizon[episode_idx[i],state_idx[i]] + (1-true_goal_binary[i])*rand_horizons[i]
+            rew = self.rew[episode_idx[i],state_idx[i]]
+            done = self.done[episode_idx[i],state_idx[i]]
+
+        batch = dict(obs=obs,
+                     obs2=obs2,
+                     goal = goal,
+                     horizon = horizon,
+                     act=act,
+                     rew=rew,
+                     done=done)
+
+
+
+        return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in batch.items()}
 class TDM:
 
     def __init__(self, env_fn, actor_critic=core.MLPtdmActorCritic, ac_kwargs=dict(), seed=0, 
-        steps_per_epoch=2000, epochs=1000, replay_size=int(1500000), gamma=0.99, 
+        steps_per_epoch=2000, epochs=1000, replay_size=int(100000), gamma=0.99, 
         polyak=0.995, lr=1e-3, p_lr=1e-3, alpha=0.0, batch_size=100, start_steps=1000, 
         update_after=1000, update_every=50, num_test_episodes=20, max_ep_len=1000, 
         logger_kwargs=dict(), save_freq=1, algo='SAC'):
@@ -182,9 +256,9 @@ class TDM:
             
         # List of parameters for both Q-networks (save this for convenience)
         self.q_params = itertools.chain(self.ac.q1.parameters(), self.ac.q2.parameters())
-
+        self.max_horizon = 30
         # Experience buffer
-        self.replay_buffer = ReplayBuffer(obs_dim=self.obs_dim, act_dim=self.act_dim, size=replay_size)
+        self.replay_buffer = EpisodicReplayBuffer(obs_dim=self.obs_dim[0], act_dim=self.act_dim, size=replay_size,max_horizon=self.max_horizon)
 
         # Count variables (protip: try to get a feel for how different size networks behave!)
         var_counts = tuple(core.count_vars(module) for module in [self.ac.pi, self.ac.q1, self.ac.q2])
@@ -212,7 +286,7 @@ class TDM:
         self.polyak = polyak
         # Set up model saving
         self.logger.setup_pytorch_saver(self.ac)
-        self.max_horizon = 30
+        
         self.eval_freq= 100
 
 
@@ -230,20 +304,17 @@ class TDM:
             a2, logp_a2 = self.ac.pi(torch.cat([o2,g,(h-1).view(-1,1)],axis=1))
 
             # Target Q-values
-            q1_pi_targ = self.ac_targ.q1(torch.cat([o2,g,(h-1).view(-1,1)],axis=1), a2)
-            q2_pi_targ = self.ac_targ.q2(torch.cat([o2,g,(h-1).view(-1,1)],axis=1), a2)
-            q_pi_targ = torch.min(q1_pi_targ,q2_pi_targ)
+            q1_pi_targ = torch.abs(self.ac_targ.q1(torch.cat([o2,g,(h-1).view(-1,1)],axis=1), a2)-g)
+            q2_pi_targ = torch.abs(self.ac_targ.q2(torch.cat([o2,g,(h-1).view(-1,1)],axis=1), a2)-g)
+            q_pi_targ = torch.max(q1_pi_targ,q2_pi_targ)
             # q_pi_targ = torch.max(q1_pi_targ, q2_pi_targ)
-
             dist_to_goal = torch.min(torch.abs(o2 - g), torch.abs(2*math.pi - o2 - g))
-            #dist_to_goal = torch.abs(o2 - g)
-            
-            backup = ((h-1)==0).view(-1,1)*(-1)*dist_to_goal + ((h-1)!=0).view(-1,1)*q_pi_targ
+            backup = ((h-1)==0).view(-1,1)*dist_to_goal + ((h-1)!=0).view(-1,1)*q_pi_targ
             # backup = r + self.gamma * (1 - d) * (q_pi_targ - self.alpha * logp_a2)
 
         # MSE loss against Bellman backup
-        loss_q1 = ((q1 - backup)**2).mean()
-        loss_q2 = ((q2 - backup)**2).mean()
+        loss_q1 = ((torch.abs(q1-g.detach()) - backup)**2).mean()
+        loss_q2 = ((torch.abs(q2-g.detach()) - backup)**2).mean()
         loss_q = loss_q1 + loss_q2
 
         # Useful info for logging
@@ -259,10 +330,11 @@ class TDM:
         h = data['horizon']
         # Sample recent data for policy update
         pi, logp_pi = self.ac.pi(torch.cat([o,g,h.view(-1,1)],axis=1))
-        q1_pi = self.ac.q1(torch.cat([o,g,h.view(-1,1)],axis=1), pi)
-        q2_pi = self.ac.q2(torch.cat([o,g,h.view(-1,1)],axis=1), pi)
-        q_pi = torch.min(q1_pi, q2_pi)
+        # q1_pi = self.ac.q1(torch.cat([o,g,h.view(-1,1)],axis=1), pi)
+        # q2_pi = self.ac.q2(torch.cat([o,g,h.view(-1,1)],axis=1), pi)
+        # q_pi = torch.min(q1_pi, q2_pi)
 
+        q_pi =  - torch.abs(self.ac.q1(torch.cat([o,g,h.view(-1,1)],axis=1), pi)-g.detach())
 
         loss_pi = (self.alpha * logp_pi.view(-1,1) - q_pi.sum(1)).mean()
         # Useful info for logging
@@ -333,43 +405,44 @@ class TDM:
             self.logger.store(TestEpRet=ep_ret, TestEpLen=ep_len)
 
     def test_tdm(self):
+        goal_reaches = 0
         for j in range(self.num_test_episodes):
             goal = self.test_env.sample_random_goal()    
             horizon = np.random.randint(1,self.max_horizon)
             q_values = []
             o, d, ep_ret, ep_len = self.test_env.reset(), False, 0, 0
-            start = o
-            #goal[:] = 1.6
+            goal_reached = False
             for t in range(horizon,0,-1):   
                 a = self.get_action(np.concatenate((o,goal,np.array([t]))),True)
                 q_val = self.get_q_value(np.concatenate((o,goal,np.array([t]))).reshape(1,-1), a.reshape(1,-1)).detach().cpu().numpy()
                 q_values.append(q_val)
                 o, r, d, _ = self.test_env.step(a)
                 ep_ret += r
+                if((o-goal).sum()<0.1):
+                    goal_reached=True
+            if(goal_reached):
+                goal_reaches+=1
 
-                if t == 1:
-                    print(start, goal, o)
-
-            q_errors = np.abs(np.array(q_values).squeeze()+np.abs(o-goal).reshape(1,-1))
+            q_errors = np.abs(np.abs(q_values-goal)-np.abs(o-goal))
+            # q_errors = np.abs(np.array(q_values).squeeze()+np.abs(o-goal).reshape(1,-1))
             self.logger.store(TDMError=np.sum(q_errors),TestEpRet=ep_ret)
-            
+        self.logger.store(GoalReach=goal_reaches/self.num_test_episodes) 
 
 
     def run(self):
         total_steps = self.steps_per_epoch * self.epochs
         total_episodes = 100000
         start_time = time.time()
+        o, ep_ret, ep_len = self.env.reset(), 0, 0
         timesteps = 0
         for e in range(total_episodes):
             # Sample a goal
-            o, ep_ret, ep_len = self.env.reset(), 0, 0
-            start = o
+            o = self.env.reset()
             goal = self.env.sample_random_goal()
-            #goal[:] = 1.6
-
             # Sample a horizon
             horizon = np.random.randint(1,self.max_horizon)
             # print("Training episode: {}".format(e))
+            obs_list = []
             for t in range(horizon,0,-1):
                 # Until start_steps have elapsed, randomly sample actions
                 # from a uniform distribution for better exploration. Afterwards, 
@@ -384,14 +457,11 @@ class TDM:
                 ep_ret += r
                 ep_len += 1
                 timesteps+=1
-                
-                # if t == 1:
-                #     print(start, goal, o2)
             
 
                 # Store experience to replay buffer
                 self.replay_buffer.store(o, a, r, o2, goal, t, d)
-
+                obs_list.append(o)
                 # Super critical, easy to overlook step: make sure to update 
                 # most recent observation!
                 o = o2
@@ -420,7 +490,8 @@ class TDM:
                     self.logger.log_tabular('Epoch', epoch)
                     self.logger.log_tabular('TestEpRet', with_min_and_max=True)
                     self.logger.log_tabular('TDMError', with_min_and_max=True)
-                    self.logger.log_tabular('TotalUpdates', t)
+                    self.logger.log_tabular('GoalReach', average_only=True)
+                    self.logger.log_tabular('TotalUpdates', timesteps)
                     self.logger.log_tabular('Q1Vals', with_min_and_max=True)
                     self.logger.log_tabular('Q2Vals', with_min_and_max=True)
                     self.logger.log_tabular('LogPi', with_min_and_max=True)
@@ -429,3 +500,9 @@ class TDM:
                     self.logger.log_tabular('Time', time.time()-start_time)
                     self.logger.dump_tabular()
 
+
+            self.replay_buffer.finish_episode(horizon)
+
+            if(e%1000==0):
+                print(obs_list)
+                print("Goal is: {}".format(goal))
