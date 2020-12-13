@@ -8,6 +8,7 @@ import time
 import core as core
 from utils.logx import EpochLogger
 import torch.nn.functional as F
+import math
 device = torch.device("cpu")
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -211,7 +212,7 @@ class TDM:
         self.polyak = polyak
         # Set up model saving
         self.logger.setup_pytorch_saver(self.ac)
-        self.max_horizon = 10
+        self.max_horizon = 30
         self.eval_freq= 100
 
 
@@ -233,7 +234,11 @@ class TDM:
             q2_pi_targ = self.ac_targ.q2(torch.cat([o2,g,(h-1).view(-1,1)],axis=1), a2)
             q_pi_targ = torch.min(q1_pi_targ,q2_pi_targ)
             # q_pi_targ = torch.max(q1_pi_targ, q2_pi_targ)
-            backup = ((h-1)==0).view(-1,1)*(-1)*torch.abs(o2-g) + ((h-1)!=0).view(-1,1)*q_pi_targ
+
+            dist_to_goal = torch.min(torch.abs(o2 - g), torch.abs(2*math.pi - o2 - g))
+            #dist_to_goal = torch.abs(o2 - g)
+            
+            backup = ((h-1)==0).view(-1,1)*(-1)*dist_to_goal + ((h-1)!=0).view(-1,1)*q_pi_targ
             # backup = r + self.gamma * (1 - d) * (q_pi_targ - self.alpha * logp_a2)
 
         # MSE loss against Bellman backup
@@ -333,12 +338,17 @@ class TDM:
             horizon = np.random.randint(1,self.max_horizon)
             q_values = []
             o, d, ep_ret, ep_len = self.test_env.reset(), False, 0, 0
+            start = o
+            #goal[:] = 1.6
             for t in range(horizon,0,-1):   
                 a = self.get_action(np.concatenate((o,goal,np.array([t]))),True)
                 q_val = self.get_q_value(np.concatenate((o,goal,np.array([t]))).reshape(1,-1), a.reshape(1,-1)).detach().cpu().numpy()
                 q_values.append(q_val)
                 o, r, d, _ = self.test_env.step(a)
                 ep_ret += r
+
+                if t == 1:
+                    print(start, goal, o)
 
             q_errors = np.abs(np.array(q_values).squeeze()+np.abs(o-goal).reshape(1,-1))
             self.logger.store(TDMError=np.sum(q_errors),TestEpRet=ep_ret)
@@ -349,11 +359,14 @@ class TDM:
         total_steps = self.steps_per_epoch * self.epochs
         total_episodes = 100000
         start_time = time.time()
-        o, ep_ret, ep_len = self.env.reset(), 0, 0
         timesteps = 0
         for e in range(total_episodes):
             # Sample a goal
+            o, ep_ret, ep_len = self.env.reset(), 0, 0
+            start = o
             goal = self.env.sample_random_goal()
+            #goal[:] = 1.6
+
             # Sample a horizon
             horizon = np.random.randint(1,self.max_horizon)
             # print("Training episode: {}".format(e))
@@ -371,6 +384,9 @@ class TDM:
                 ep_ret += r
                 ep_len += 1
                 timesteps+=1
+                
+                # if t == 1:
+                #     print(start, goal, o2)
             
 
                 # Store experience to replay buffer

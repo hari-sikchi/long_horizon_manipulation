@@ -9,6 +9,7 @@ from maddux_gym.maddux.robots.arm import Arm
 from maddux_gym.maddux.robots import noodle_arm
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
+import math
 
 # register(
 #     id='maddux-v0',
@@ -50,7 +51,7 @@ class MadduxEnv(gym.Env):
 
         # actions space
         self.action_space = spaces.Box(low=-1.0,high=1.0,shape=(self.num_links,))
-        self.action_scale = 0.1 # max delta theta
+        self.action_scale = 0.2 # max delta theta
 
         # obs space
         self.observation_space = spaces.Box(low=0,high=2*np.pi,shape=(self.num_links,))
@@ -62,7 +63,7 @@ class MadduxEnv(gym.Env):
         self.hit_obstacle = False
         self.steps = 0
         # self.max_steps = 10
-        self._max_episode_length = 10
+        self._max_episode_length = 30
         self.reset_ang = q0
 
         # render stuff
@@ -83,7 +84,8 @@ class MadduxEnv(gym.Env):
         # TODO: distance from target
         reward = 0
         if self.goal is not None:
-            reward = -np.linalg.norm(self.goal - obs)
+            reward = -np.linalg.norm(np.minimum(np.absolute(self.goal - obs), np.absolute(2*math.pi - self.goal - obs)))
+            #reward = -np.linalg.norm(self.goal-obs)
         return reward
 
 
@@ -107,7 +109,8 @@ class MadduxEnv(gym.Env):
         # apply new joint angles
         self.steps += 1
         for i in range(self.num_links):
-            q_new = self.mad_env.robot.links[i].theta + (action[i] * self.action_scale)
+            q_new = (self.mad_env.robot.links[i].theta + (action[i] * self.action_scale))%(2*math.pi)
+            #q_new = self.mad_env.robot.links[i].theta + (action[i] * self.action_scale)
             self.mad_env.robot.update_link_angle(i, q_new, True)
 
         for obstacle in self.mad_env.static_objects:
@@ -124,6 +127,7 @@ class MadduxEnv(gym.Env):
 
     def reset(self):
         self.reset_ang = self.observation_space.sample()
+        #self.reset_ang[:] = 1
         # reset joint angles
         for i in range(self.num_links):
             self.mad_env.robot.update_link_angle(i, self.reset_ang[i], True)
