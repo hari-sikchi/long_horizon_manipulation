@@ -31,13 +31,13 @@ class CEMoptimizer(object):
         #############
         # params for CEM controller
         #############
-        self.max_iters = 12
+        self.max_iters = 50
         self.num_elites = 20
         self.action_dim = self.env.action_space.shape[0]
         self.obs_dim = self.env.observation_space.shape[0]
         self.sol_dim = self.env.observation_space.shape[0] * self.horizon
-        self.ub = np.repeat(self.env.observation_space.high,self.horizon,axis=0)
-        self.lb = np.repeat(self.env.observation_space.low,self.horizon,axis=0)
+        self.ub = np.repeat(self.env.observation_space.high,self.horizon,axis=0)*0 + 1
+        self.lb = np.repeat(self.env.observation_space.low,self.horizon,axis=0)*0 + -1
         self.epsilon = 0.001
         self.alpha = 0.1
         self.initial_var = 0.25
@@ -54,9 +54,9 @@ class CEMoptimizer(object):
         goal_state = np.array([goal_state.copy()] * self.N)
         
         mean = self.mean
-        var = np.tile(np.square(self.env.action_space.high[0]-self.env.action_space.low[0]) / 4, [self.sol_dim])
+        var = np.tile(np.square(self.env.observation_space.high[0]-self.env.observation_space.low[0])/4, [self.sol_dim])
         t = 0
-        X = stats.truncnorm(0, 2*np.pi, loc=np.zeros_like(mean), scale= np.ones_like(mean))
+        X = stats.truncnorm(-2, 2, loc=np.zeros_like(mean), scale= np.ones_like(mean))
 
         # CEM
         while ((t < self.max_iters)):
@@ -68,10 +68,10 @@ class CEMoptimizer(object):
 
 
             # clip subgoals between -1 and 1
-            # subgoal_traj = np.clip(subgoal_traj, -1, 1)
+            subgoal_traj = np.clip(subgoal_traj, -1, 1)
             # transform subgoals to true scale
-            # subgoal_traj_scale = (subgoal_traj+1)/2 * self.env.observation_space.high[0]
-            subgoal_traj_scale = subgoal_traj
+            subgoal_traj_scale = (subgoal_traj+1)/2 * self.env.observation_space.high[0]
+            # subgoal_traj_scale = subgoal_traj
             costs = np.zeros((self.N,))
             for h in range(self.horizon):
                 
@@ -88,7 +88,10 @@ class CEMoptimizer(object):
                 horizon_t = torch.FloatTensor(np.zeros((self.N))+self.timesteps_per_horizon).view(-1,1).to(device)
                 curr_action_t = self.tdm.pi(torch.cat((curr_state_t,curr_subgoal_t, horizon_t),dim=1))[0].to(device)
                 state_argument = torch.cat((curr_state_t,curr_subgoal_t,horizon_t),dim=1)
-                costs+= torch.abs(self.tdm.q1(state_argument,curr_action_t)-curr_subgoal_t).sum(1).detach().cpu().numpy().reshape(-1)
+                if(h==self.horizon-1):
+                    costs+=10*torch.abs(self.tdm.q1(state_argument,curr_action_t)-curr_subgoal_t).sum(1).detach().cpu().numpy().reshape(-1)
+                else:
+                    costs+= torch.abs(self.tdm.q1(state_argument,curr_action_t)-curr_subgoal_t).sum(1).detach().cpu().numpy().reshape(-1)
 
 
             indices = np.argsort(costs)
@@ -102,13 +105,13 @@ class CEMoptimizer(object):
         end = time.time()
 
 
-        return mean
+        return (mean+1)/2 * self.env.observation_space.high[0]
 
 
 if __name__=='__main__':
 
     # Add proper model path here
-    tdm_model_path = "/Users/harshit/work/git/long_horizon_manipulation/data/tdm_models/experiment1_s0/pyt_save/model.pt"
+    tdm_model_path = "/Users/harshit/work/git/long_horizon_manipulation/data/tdm_models/experiment_nowrap_s0/pyt_save/model.pt"
     env = gym.make('Maddux-v0')
     obs_dim = env.observation_space.shape[0]
 
@@ -117,7 +120,7 @@ if __name__=='__main__':
 
     # Planner params
     horizon = 5
-    timesteps_per_horizon = 10
+    timesteps_per_horizon = 20
 
     cem_planner = CEMoptimizer(env, tdm, horizon=horizon, timesteps_per_horizon=timesteps_per_horizon)
 
