@@ -39,7 +39,7 @@ class ReplayBuffer:
         self.ptr = (self.ptr+1) % self.max_size
         self.size = min(self.size+1, self.max_size)
 
-    def sample_batch(self, batch_size=32):
+    def sample_batch(self, batch_size=32, true_goal_ratio = 0.99):
         idxs = np.random.randint(0, self.size, size=batch_size)
         batch = dict(obs=self.obs_buf[idxs],
                      obs2=self.obs2_buf[idxs],
@@ -89,7 +89,7 @@ class EpisodicReplayBuffer:
 
 
     # Sample with goal relabelling
-    def sample_batch(self, batch_size=32, true_goal_ratio = 0.5):
+    def sample_batch(self, batch_size=32, true_goal_ratio = 0.99):
 
         episode_idx = np.random.randint(0, self.size, size=batch_size)
         random_floats = (np.random.uniform(size=batch_size).reshape(-1) * self.max_horizon_buf[episode_idx])
@@ -128,6 +128,9 @@ class EpisodicReplayBuffer:
 
 
         return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in batch.items()}
+
+
+
 class TDM:
 
     def __init__(self, env_fn, actor_critic=core.MLPtdmActorCritic, ac_kwargs=dict(), seed=0, 
@@ -259,7 +262,8 @@ class TDM:
         self.q_params = itertools.chain(self.ac.q1.parameters(), self.ac.q2.parameters())
         self.max_horizon = 30
         # Experience buffer
-        self.replay_buffer = EpisodicReplayBuffer(obs_dim=self.obs_dim[0], act_dim=self.act_dim, size=replay_size,max_horizon=self.max_horizon)
+        self.replay_buffer = ReplayBuffer(obs_dim=self.obs_dim[0], act_dim=self.act_dim, size=replay_size)
+        # self.replay_buffer = EpisodicReplayBuffer(obs_dim=self.obs_dim[0], act_dim=self.act_dim, size=replay_size,max_horizon=self.max_horizon)
 
         # Count variables (protip: try to get a feel for how different size networks behave!)
         var_counts = tuple(core.count_vars(module) for module in [self.ac.pi, self.ac.q1, self.ac.q2])
@@ -290,14 +294,33 @@ class TDM:
         
         self.eval_freq= 100
 
+        self.dist_metric = 'wrap' # ['wrap','eucledian']
+        self.method = 'diff' #['diff','next_state', 'original']
 
+    def compute_dist_to_goal(self,o,g,metric='wrap'):
+        if metric=='wrap':
+            dist_to_goal = torch.min(torch.abs(o-g), torch.abs(2*math.pi - torch.max(o,g) + torch.min(o,g)))
+        else:
+            dist_to_goal = torch.abs(o-g)
+        return dist_to_goal
+    # method = ['diff','next_state', 'original']
+    def q_function_mod(self,q, o, g, t,a,method='diff'):
+        if(method=='diff'):
+            return -torch.abs(q(torch.cat([o,g,t],axis=1),a)+o-g)
+        elif(method=='next_state'):
+            return -torch.abs(q(torch.cat([o,g,t],axis=1),a)-g)
+        else:
+            return q(torch.cat([o,g,t],axis=1),a)
 
     # Set up function for computing SAC Q-losses
     def compute_loss_q(self, data):
         o, a, r, o2, d = data['obs'], data['act'], data['rew'], data['obs2'], data['done']
         g,h = data['goal'],data['horizon']
-        q1 = self.ac.q1(torch.cat([o,g,h.view(-1,1)],axis=1),a)
-        q2 = self.ac.q2(torch.cat([o,g,h.view(-1,1)],axis=1),a)
+
+        q1 = self.q_function_mod(self.ac.q1,o,g,(h).view(-1,1),a,method=self.method)
+        q2 = self.q_function_mod(self.ac.q2,o,g,(h).view(-1,1),a,method=self.method)
+        # q1 = self.ac.q1(torch.cat([o,g,h.view(-1,1)],axis=1),a)
+        # q2 = self.ac.q2(torch.cat([o,g,h.view(-1,1)],axis=1),a)
 
         # Bellman backup for Q functions
         with torch.no_grad():
@@ -305,19 +328,26 @@ class TDM:
             a2, logp_a2 = self.ac.pi(torch.cat([o2,g,(h-1).view(-1,1)],axis=1))
 
             # Target Q-values
-            q1_pi_targ = torch.abs(self.ac_targ.q1(torch.cat([o2,g,(h-1).view(-1,1)],axis=1), a2)-g)
-            q2_pi_targ = torch.abs(self.ac_targ.q2(torch.cat([o2,g,(h-1).view(-1,1)],axis=1), a2)-g)
-            q_pi_targ = torch.max(q1_pi_targ,q2_pi_targ)
-            # q_pi_targ = torch.max(q1_pi_targ, q2_pi_targ)
-            dist_to_goal = torch.min(torch.abs(o2 - g), torch.abs(2*math.pi - torch.max(o2,g) + torch.min(o2,g)))
-            backup = ((h-1)==0).view(-1,1)*dist_to_goal + ((h-1)!=0).view(-1,1)*q_pi_targ
-            # backup = r + self.gamma * (1 - d) * (q_pi_targ - self.alpha * logp_a2)
+            q1_pi_targ = self.q_function_mod(self.ac_targ.q1,o2,g,(h-1).view(-1,1),a2,method=self.method)
+            # q1_pi_targ = torch.abs(self.ac_targ.q1(torch.cat([o2,g,(h-1).view(-1,1)],axis=1), a2)+o2-g)
+            q2_pi_targ = self.q_function_mod(self.ac_targ.q2,o2,g,(h-1).view(-1,1),a2,method=self.method)
+            dist_to_goal = self.compute_dist_to_goal(o2,g,self.dist_metric)
+            q_pi_targ = torch.min(q1_pi_targ,q2_pi_targ)
+            backup = ((h-1)==0).view(-1,1)*(-1)*dist_to_goal + ((h-1)!=0).view(-1,1)*q_pi_targ
+            # if self.method=='original': 
+            #     q_pi_targ = torch.min(q1_pi_targ,q2_pi_targ)
+            #     backup = ((h-1)==0).view(-1,1)*-1*dist_to_goal + ((h-1)!=0).view(-1,1)*q_pi_targ
+            # else:
+            #     q_pi_targ = torch.max(q1_pi_targ,q2_pi_targ)
+            #     backup = ((h-1)==0).view(-1,1)*dist_to_goal + ((h-1)!=0).view(-1,1)*q_pi_targ
 
+            
+    
         # MSE loss against Bellman backup
-        loss_q1 = ((torch.abs(q1-g.detach()) - backup)**2).mean()
-        loss_q2 = ((torch.abs(q2-g.detach()) - backup)**2).mean()
+        loss_q1 = ((q1 - backup)**2).mean()
+        loss_q2 = ((q2 - backup)**2).mean()
         loss_q = loss_q1 + loss_q2
-
+        self.logger.store(TrainTDMLoss=loss_q) 
         # Useful info for logging
         q_info = dict(Q1Vals=q1.detach().numpy(),
                       Q2Vals=q2.detach().numpy())
@@ -331,11 +361,14 @@ class TDM:
         h = data['horizon']
         # Sample recent data for policy update
         pi, logp_pi = self.ac.pi(torch.cat([o,g,h.view(-1,1)],axis=1))
+        q1_pi = self.q_function_mod(self.ac.q1,o,g,(h).view(-1,1),pi,method=self.method)
+        q2_pi = self.q_function_mod(self.ac.q2,o,g,(h).view(-1,1),pi,method=self.method)
         # q1_pi = self.ac.q1(torch.cat([o,g,h.view(-1,1)],axis=1), pi)
         # q2_pi = self.ac.q2(torch.cat([o,g,h.view(-1,1)],axis=1), pi)
-        # q_pi = torch.min(q1_pi, q2_pi)
+        q_pi = torch.min(q1_pi, q2_pi)
+        # q_pi = -torch.abs(torch.min(q1_pi, q2_pi)+o.detach()-g.detach())
 
-        q_pi =  - torch.abs(self.ac.q1(torch.cat([o,g,h.view(-1,1)],axis=1), pi)-g.detach())
+        # q_pi =  - torch.abs(self.ac.q1(torch.cat([o,g,h.view(-1,1)],axis=1), pi)-g.detach())
 
         loss_pi = (self.alpha * logp_pi.view(-1,1) - q_pi.sum(1)).mean()
         # Useful info for logging
@@ -415,7 +448,8 @@ class TDM:
             goal_reached = False
             for t in range(horizon,0,-1):   
                 a = self.get_action(np.concatenate((o,goal,np.array([t]))),True)
-                q_val = self.get_q_value(np.concatenate((o,goal,np.array([t]))).reshape(1,-1), a.reshape(1,-1)).detach().cpu().numpy()
+                q_val = self.q_function_mod(self.ac.q1,torch.as_tensor(o.reshape(1,-1), dtype=torch.float32),torch.as_tensor(goal.reshape(1,-1), dtype=torch.float32),torch.as_tensor([t], dtype=torch.float32).view(-1,1),torch.as_tensor(a.reshape(1,-1), dtype=torch.float32),method=self.method).detach().cpu().numpy()
+                # q_val = self.get_q_value(np.concatenate((o,goal,np.array([t]))).reshape(1,-1), a.reshape(1,-1)).detach().cpu().numpy() + o.reshape(1,-1)
                 q_values.append(q_val)
                 o, r, d, _ = self.test_env.step(a)
                 ep_ret += r
@@ -423,16 +457,18 @@ class TDM:
                     goal_reached=True
             if(goal_reached):
                 goal_reaches+=1
-
-            q_errors = np.abs(np.abs(q_values-goal)-np.abs(o-goal))
+            # import ipdb;ipdb.set_trace()
+            q_errors = np.sum(np.abs(np.array(q_values).squeeze() +  np.abs(o-goal).reshape(1,-1)),axis=1)
+            # q_errors = np.sum(np.abs(np.abs(np.array(q_values).squeeze()-goal.reshape(1,-1)) - np.abs(o-goal).reshape(1,-1)),axis=1)
+            # q_errors = np.abs(np.abs(q_values-goal)-np.abs(o-goal))
             # q_errors = np.abs(np.array(q_values).squeeze()+np.abs(o-goal).reshape(1,-1))
-            self.logger.store(TDMError=np.sum(q_errors),TestEpRet=ep_ret)
+            self.logger.store(TDMError=np.mean(q_errors),TestEpRet=ep_ret)
         self.logger.store(GoalReach=goal_reaches/self.num_test_episodes) 
 
 
     def run(self):
         total_steps = self.steps_per_epoch * self.epochs
-        total_episodes = 100000
+        total_episodes = 1000000
         start_time = time.time()
         o, ep_ret, ep_len = self.env.reset(), 0, 0
         timesteps = 0
@@ -442,7 +478,6 @@ class TDM:
             goal = self.env.sample_random_goal()
             # Sample a horizon
             horizon = np.random.randint(1,self.max_horizon)
-            # print("Training episode: {}".format(e))
             obs_list = []
             for t in range(horizon,0,-1):
                 # Until start_steps have elapsed, randomly sample actions
@@ -474,7 +509,7 @@ class TDM:
                 # Update handling
                 if timesteps >= self.update_after and timesteps % self.update_every == 0:
                     for j in range(self.update_every):
-                        batch = self.replay_buffer.sample_batch(self.batch_size)
+                        batch = self.replay_buffer.sample_batch(self.batch_size,true_goal_ratio=1.0)
                         self.update(data=batch,update_timestep=t)
 
                 # End of epoch handling
@@ -492,6 +527,7 @@ class TDM:
                     self.logger.log_tabular('Episodes', e)
                     self.logger.log_tabular('TestEpRet', with_min_and_max=True)
                     self.logger.log_tabular('TDMError', with_min_and_max=True)
+                    self.logger.log_tabular('TrainTDMLoss', with_min_and_max=True)
                     self.logger.log_tabular('GoalReach', average_only=True)
                     self.logger.log_tabular('TotalUpdates', timesteps)
                     self.logger.log_tabular('Q1Vals', with_min_and_max=True)
@@ -503,7 +539,7 @@ class TDM:
                     self.logger.dump_tabular()
 
 
-            self.replay_buffer.finish_episode(horizon)
+            # self.replay_buffer.finish_episode(horizon)
 
             if(e%1000==0):
                 print(obs_list)
