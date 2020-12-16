@@ -309,7 +309,7 @@ class TDM:
             q2_pi_targ = torch.abs(self.ac_targ.q2(torch.cat([o2,g,(h-1).view(-1,1)],axis=1), a2)-g)
             q_pi_targ = torch.max(q1_pi_targ,q2_pi_targ)
             # q_pi_targ = torch.max(q1_pi_targ, q2_pi_targ)
-            dist_to_goal = torch.min(torch.abs(o2 - g), torch.abs(2*math.pi - o2 - g))
+            dist_to_goal = torch.min(torch.abs(o2 - g), torch.abs(2*math.pi - torch.max(o2,g) + torch.min(o2,g)))
             backup = ((h-1)==0).view(-1,1)*dist_to_goal + ((h-1)!=0).view(-1,1)*q_pi_targ
             # backup = r + self.gamma * (1 - d) * (q_pi_targ - self.alpha * logp_a2)
 

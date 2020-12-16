@@ -84,7 +84,7 @@ class MadduxEnv(gym.Env):
         # TODO: distance from target
         reward = 0
         if self.goal is not None:
-            reward = -np.linalg.norm(np.minimum(np.absolute(self.goal - obs), np.absolute(2*math.pi - self.goal - obs)))
+            reward = -np.linalg.norm(np.minimum(np.absolute(self.goal - obs), np.absolute(2*math.pi - np.maximum(self.goal,obs) + np.minimum(self.goal,obs))))
             #reward = -np.linalg.norm(self.goal-obs)
         return reward
 
