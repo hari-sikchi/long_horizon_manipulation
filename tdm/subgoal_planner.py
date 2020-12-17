@@ -263,8 +263,8 @@ def test_tdm(tdm):
 if __name__=='__main__':
 
     # Add proper model path here
-    tdm_model_path = "/Users/harshit/work/git/long_horizon_manipulation/data/dump1_s0/pyt_save/model.pt"
-    # tdm_model_path = "/Users/harshit/work/git/long_horizon_manipulation/data/tdm_models/no_her_tejus_wrap_long_run_s0/pyt_save/model.pt"
+    # tdm_model_path = "/Users/harshit/work/git/long_horizon_manipulation/data/dump1_s0/pyt_save/model.pt"
+    tdm_model_path = "/Users/harshit/work/git/long_horizon_manipulation/data/tdm_models/her_mod_obstacles/pyt_save/model.pt"
     env = gym.make('Maddux-v0')
     obs_dim = env.observation_space.shape[0]
 
@@ -277,8 +277,8 @@ if __name__=='__main__':
 
     cem_planner = CEMoptimizer(env, tdm, horizon=horizon, timesteps_per_horizon=timesteps_per_horizon)
 
-    start = np.array([0,0,0,0,0])
-    goal = np.array([3.0,3.0,3.0,3.0,3.0])
+    start = np.array([0,2,0,4,0])
+    goal = np.array([3.0,5.0,1.0,2.0,3.0])
 
     path = cem_planner.get_path(start,goal)
     print("Planned subgoals along path, start: {}, goal: {}".format(start, goal))
