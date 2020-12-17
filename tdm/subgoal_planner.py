@@ -222,6 +222,43 @@ class CEMoptimizer(object):
 
 #         return (mean+1)/2 * self.env.observation_space.high[0]
 
+def get_action(tdm, o, deterministic=False):
+        return tdm.act(torch.as_tensor(o, dtype=torch.float32), 
+                      deterministic)
+
+def get_q_value(tdm,o,a):
+    return tdm.q1(torch.as_tensor(o, dtype=torch.float32), 
+                    torch.as_tensor(a, dtype=torch.float32))
+
+def test_tdm(tdm):
+        goal_reaches = 0
+        test_env = gym.make('Maddux-v0')
+        for j in range(10):
+            goal = test_env.sample_random_goal()    
+            horizon = np.random.randint(1,30)
+            q_values = []
+            o, d, ep_ret, ep_len = test_env.reset(), False, 0, 0
+            start = o
+            goal_reached = False
+            for t in range(horizon,0,-1):   
+                a = get_action(tdm, np.concatenate((o,goal,np.array([t]))),True)
+                q_val = get_q_value(tdm, np.concatenate((o,goal,np.array([t]))).reshape(1,-1), a.reshape(1,-1)).detach().cpu().numpy()
+                q_values.append(q_val)
+                o, r, d, _ = test_env.step(a)
+                ep_ret += r
+                if((o-goal).sum()<(0.1*5)):
+                    goal_reached=True
+                
+                if(t == 1):
+                    #print(start, goal, o)
+                    pass
+            if(goal_reached):
+                goal_reaches+=1
+
+            q_errors = np.abs(np.abs(q_values-goal)-np.abs(o-goal))
+            #import ipdb; ipdb.set_trace()
+            #print(q_errors, goal_reaches)
+            # q_errors = np.abs(np.array(q_values).squeeze()+np.abs(o-goal).reshape(1,-1))
 
 if __name__=='__main__':
 
@@ -231,8 +268,8 @@ if __name__=='__main__':
     env = gym.make('Maddux-v0')
     obs_dim = env.observation_space.shape[0]
 
-    # tdm = core.MLPtdmActorCritic(env.observation_space, env.action_space,special_policy='tdm')
     tdm = torch.load(tdm_model_path)
+    test_tdm(tdm)
 
     # Planner params
     horizon = 5
