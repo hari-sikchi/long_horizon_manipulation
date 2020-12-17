@@ -25,7 +25,8 @@ class MadduxEnv(gym.Env):
         # maddux env
         obstacles = []
         obstacles = [Obstacle([1, 2, 1], [2, 2.5, 1.5]),
-                     Obstacle([3, 2, 1], [4, 2.5, 1.5])]
+                     Obstacle([3, 2, 1], [4, 2.5, 1.5]),
+                     Obstacle([5, 6, 1], [0, 3, 1.5])]
         # ball = Ball([2.5, 2.5, 2.0], 0.25)
 
 
@@ -39,14 +40,14 @@ class MadduxEnv(gym.Env):
         L3 = Link(0,2,0,-1.571)
         L4 = Link(0,0,0,1.571)
         L5 = Link(0,2,0,1.571)
-        links = np.array([L1, L2, L3, L4, L5])
-        base_pos = np.array([2.0, 2.0, 0.0])
+        self.links = np.array([L1, L2, L3, L4, L5])
+        self.base_pos = np.array([2.0, 2.0, 0.0])
 
         # Initial arm angle
         q0 = np.array([0, 0, 0, np.pi/2, 0])
 
         # Create arm
-        r = Arm(links, q0, '1-link', base=base_pos)
+        r = Arm(self.links, q0, '1-link', base=self.base_pos)
 
         self.mad_env = Environment(dimensions=[10.0, 10.0, 20.0],
                               dynamic_objects=[],
@@ -104,7 +105,16 @@ class MadduxEnv(gym.Env):
 
 
     def sample_random_goal(self):
-        rand_goal = self.observation_space.sample()
+        collision = True
+        while collision:
+            rand_goal = self.observation_space.sample()
+            r = Arm(self.links, rand_goal, '1-link', base=self.base_pos)
+            collision = False
+            for obstacle in self.mad_env.static_objects:
+                if r.is_in_collision(obstacle):
+                    collision = True
+                    break
+            
         self.goal = rand_goal
         return rand_goal
 
