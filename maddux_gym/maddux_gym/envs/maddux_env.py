@@ -24,10 +24,14 @@ class MadduxEnv(gym.Env):
 
         # maddux env
         obstacles = []
-        # obstacles = [Obstacle([1, 2, 1], [2, 2.5, 1.5]),
-        #              Obstacle([3, 2, 1], [4, 2.5, 1.5])]
+        obstacles = [Obstacle([1, 2, 1], [2, 2.5, 1.5]),
+                     Obstacle([3, 2, 1], [4, 2.5, 1.5])]
         # ball = Ball([2.5, 2.5, 2.0], 0.25)
 
+
+
+        # obstacles = [Obstacle([1, 2, 1], [2, 2.5, 1.5]),
+        #              Obstacle([3, 2, 1], [4, 2.5, 1.5])]
         # Create a series of links (each link has one joint)
         self.num_links = 5
         L1 = Link(0,0,0,1.571)
