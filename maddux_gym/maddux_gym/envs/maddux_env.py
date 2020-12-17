@@ -25,7 +25,8 @@ class MadduxEnv(gym.Env):
         # maddux env
         obstacles = []
         obstacles = [Obstacle([1, 2, 1], [2, 2.5, 1.5]),
-                     Obstacle([3, 2, 1], [4, 2.5, 1.5])]
+                     Obstacle([3, 2, 1], [4, 2.5, 1.5]),
+                     Obstacle([5, 6, 1], [0, 3, 1.5])]
         # ball = Ball([2.5, 2.5, 2.0], 0.25)
 
         # Create a series of links (each link has one joint)
@@ -104,10 +105,11 @@ class MadduxEnv(gym.Env):
         while collision:
             rand_goal = self.observation_space.sample()
             r = Arm(self.links, rand_goal, '1-link', base=self.base_pos)
+            collision = False
             for obstacle in self.mad_env.static_objects:
-                collision = False
                 if r.is_in_collision(obstacle):
                     collision = True
+                    break
             
         self.goal = rand_goal
         return rand_goal
