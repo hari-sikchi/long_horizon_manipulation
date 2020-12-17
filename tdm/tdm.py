@@ -261,8 +261,8 @@ class TDM:
         self.q_params = itertools.chain(self.ac.q1.parameters(), self.ac.q2.parameters())
         self.max_horizon = 30
         # Experience buffer
-        self.replay_buffer = ReplayBuffer(obs_dim=self.obs_dim[0], act_dim=self.act_dim, size=replay_size)
-        # self.replay_buffer = EpisodicReplayBuffer(obs_dim=self.obs_dim[0], act_dim=self.act_dim, size=replay_size,max_horizon=self.max_horizon)
+        # self.replay_buffer = ReplayBuffer(obs_dim=self.obs_dim[0], act_dim=self.act_dim, size=replay_size)
+        self.replay_buffer = EpisodicReplayBuffer(obs_dim=self.obs_dim[0], act_dim=self.act_dim, size=replay_size,max_horizon=self.max_horizon)
 
         # Count variables (protip: try to get a feel for how different size networks behave!)
         var_counts = tuple(core.count_vars(module) for module in [self.ac.pi, self.ac.q1, self.ac.q2])
@@ -533,7 +533,7 @@ class TDM:
                     self.logger.dump_tabular()
 
 
-            # self.replay_buffer.finish_episode(horizon)
+            self.replay_buffer.finish_episode(horizon)
 
             if(e%1000==0):
                 print(obs_list)
