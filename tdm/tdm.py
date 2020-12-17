@@ -431,10 +431,10 @@ class TDM:
     def test_tdm(self):
         goal_reaches = 0
         for j in range(self.num_test_episodes):
-            goal = self.test_env.sample_random_goal()    
             horizon = np.random.randint(1,self.max_horizon)
             q_values = []
             o, d, ep_ret, ep_len = self.test_env.reset(), False, 0, 0
+            goal = self.test_env.sample_random_goal()    
             goal_reached = False
             for t in range(horizon,0,-1):   
                 a = self.get_action(np.concatenate((o,goal,np.array([t]))),True)

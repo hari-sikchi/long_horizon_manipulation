@@ -3,6 +3,7 @@ import argparse
 import gym
 import maddux_gym
 import sys
+import point_nav
 sys.path.append('maddux_gym/maddux_gym/')
 from envs.maddux_env import MadduxEnv
 
@@ -16,8 +17,8 @@ if __name__ == "__main__":
     parser.add_argument("--seed", default=0, type=int)
 
     args = parser.parse_args()
-    # env_fn = lambda:gym.make(args.env)
-    env_fn = lambda:MadduxEnv(render=False)
+    env_fn = lambda:gym.make(args.env)
+    # env_fn = lambda:MadduxEnv(render=False)
 
 
     agent = tdm.TDM(env_fn, logger_kwargs={'output_dir':args.exp_name+'_s'+str(args.seed), 'exp_name':args.exp_name},batch_size=256, seed=args.seed, algo=args.algorithm) 
