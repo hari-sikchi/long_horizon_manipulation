@@ -499,7 +499,7 @@ class TDM:
                 # Update handling
                 if timesteps >= self.update_after and timesteps % self.update_every == 0:
                     for j in range(self.update_every):
-                        batch = self.replay_buffer.sample_batch(self.batch_size,true_goal_ratio=1.0)
+                        batch = self.replay_buffer.sample_batch(self.batch_size,true_goal_ratio=0.5)
                         self.update(data=batch,update_timestep=t)
 
                 # End of epoch handling
