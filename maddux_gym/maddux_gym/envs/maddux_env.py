@@ -26,7 +26,7 @@ class MadduxEnv(gym.Env):
         obstacles = []
         # obstacles = [Obstacle([1, 2, 1], [2, 2.5, 1.5]),
         #              Obstacle([3, 2, 1], [4, 2.5, 1.5])]
-        ball = Ball([2.5, 2.5, 2.0], 0.25)
+        # ball = Ball([2.5, 2.5, 2.0], 0.25)
 
         # Create a series of links (each link has one joint)
         self.num_links = 5
@@ -45,7 +45,7 @@ class MadduxEnv(gym.Env):
         r = Arm(links, q0, '1-link', base=base_pos)
 
         self.mad_env = Environment(dimensions=[10.0, 10.0, 20.0],
-                              dynamic_objects=[ball],
+                              dynamic_objects=[],
                               static_objects=obstacles,
                               robot=r)
 
@@ -84,7 +84,7 @@ class MadduxEnv(gym.Env):
         # TODO: distance from target
         reward = 0
         if self.goal is not None:
-            reward = -np.linalg.norm(np.minimum(np.absolute(self.goal - obs), np.absolute(2*math.pi - self.goal - obs)))
+            reward = -np.linalg.norm(np.minimum(np.absolute(self.goal - obs), np.absolute(2*math.pi - np.maximum(self.goal,obs) +np.minimum(self.goal,obs) )))
             #reward = -np.linalg.norm(self.goal-obs)
         return reward
 
