@@ -3,8 +3,9 @@ import argparse
 import gym
 import maddux_gym
 import sys
-sys.path.append('maddux_gym/maddux_gym/')
-from envs.maddux_env import MadduxEnv
+#sys.path.append('maddux_gym/maddux_gym/')
+#from envs.maddux_env import MadduxEnv
+from PointEnv import *
 
 if __name__ == "__main__":
 
@@ -17,7 +18,9 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     # env_fn = lambda:gym.make(args.env)
-    env_fn = lambda:MadduxEnv(render=False)
+    #env_fn = lambda:MadduxEnv(render=False)
+    environment_name = 'FourRooms'
+    env_fn = lambda:GoalConditionedPointWrapper(PointEnv(walls=environment_name,resize_factor=5))
 
 
     agent = tdm.TDM(env_fn, logger_kwargs={'output_dir':args.exp_name+'_s'+str(args.seed), 'exp_name':args.exp_name},batch_size=256, seed=args.seed, algo=args.algorithm) 
