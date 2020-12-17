@@ -59,15 +59,15 @@ class EpisodicReplayBuffer:
         self.obs_dim = obs_dim
         self.act_dim = act_dim
 
-        self.max_horizon = max_horizon
-        self.obs_buf = np.zeros(core.combined_shape(size, obs_dim*max_horizon), dtype=np.float32)
-        self.obs2_buf = np.zeros(core.combined_shape(size, obs_dim*max_horizon), dtype=np.float32)
-        self.goal_buf = np.zeros(core.combined_shape(size, act_dim*max_horizon), dtype=np.float32)
-        self.horizon = np.zeros((size,max_horizon), dtype=np.float32)
-        self.act_buf = np.zeros(core.combined_shape(size, act_dim*max_horizon), dtype=np.float32)
-        self.rew_buf = np.zeros((size,max_horizon), dtype=np.float32)
+        self.max_horizon = max_horizon+1
+        self.obs_buf = np.zeros(core.combined_shape(size, obs_dim*self.max_horizon), dtype=np.float32)
+        self.obs2_buf = np.zeros(core.combined_shape(size, obs_dim*self.max_horizon), dtype=np.float32)
+        self.goal_buf = np.zeros(core.combined_shape(size, act_dim*self.max_horizon), dtype=np.float32)
+        self.horizon = np.zeros((size,self.max_horizon), dtype=np.float32)
+        self.act_buf = np.zeros(core.combined_shape(size, act_dim*self.max_horizon), dtype=np.float32)
+        self.rew_buf = np.zeros((size,self.max_horizon), dtype=np.float32)
         self.max_horizon_buf = np.zeros((size), dtype=np.float32)
-        self.done_buf = np.zeros((size,max_horizon), dtype=np.float32)
+        self.done_buf = np.zeros((size,self.max_horizon), dtype=np.float32)
         self.episode_ptr, self.ptr, self.size, self.max_size = 0, 0, 0, size
 
     def store(self, obs, act, rew, next_obs, goal, horizon, done):
@@ -95,10 +95,9 @@ class EpisodicReplayBuffer:
         random_floats = (np.random.uniform(size=batch_size).reshape(-1) * self.max_horizon_buf[episode_idx])
         state_idx = random_floats.astype(int)
         future_goals = (np.random.uniform(size=batch_size).reshape(-1) * (self.max_horizon_buf[episode_idx]-state_idx)+state_idx).astype(int)
-        future_goals = np.maximum(future_goals,self.max_horizon_buf[episode_idx]-1).astype(int)
+        future_goals = np.minimum(future_goals,self.max_horizon_buf[episode_idx]-1).astype(int)
         rand_horizons = np.random.randint(1,self.max_horizon,batch_size)
-        true_goal_binary = np.random.uniform(size=batch_size)>true_goal_ratio
-
+        true_goal_binary = np.random.uniform(size=batch_size)<true_goal_ratio
         obs = np.zeros((batch_size,self.obs_dim))
         obs2 = np.zeros((batch_size,self.obs_dim))
         goal = np.zeros((batch_size,self.obs_dim))
@@ -262,8 +261,8 @@ class TDM:
         self.q_params = itertools.chain(self.ac.q1.parameters(), self.ac.q2.parameters())
         self.max_horizon = 30
         # Experience buffer
-        self.replay_buffer = ReplayBuffer(obs_dim=self.obs_dim[0], act_dim=self.act_dim, size=replay_size)
-        # self.replay_buffer = EpisodicReplayBuffer(obs_dim=self.obs_dim[0], act_dim=self.act_dim, size=replay_size,max_horizon=self.max_horizon)
+        # self.replay_buffer = ReplayBuffer(obs_dim=self.obs_dim[0], act_dim=self.act_dim, size=replay_size)
+        self.replay_buffer = EpisodicReplayBuffer(obs_dim=self.obs_dim[0], act_dim=self.act_dim, size=replay_size,max_horizon=self.max_horizon)
 
         # Count variables (protip: try to get a feel for how different size networks behave!)
         var_counts = tuple(core.count_vars(module) for module in [self.ac.pi, self.ac.q1, self.ac.q2])
@@ -303,6 +302,7 @@ class TDM:
         else:
             dist_to_goal = torch.abs(o-g)
         return dist_to_goal
+
     # method = ['diff','next_state', 'original']
     def q_function_mod(self,q, o, g, t,a,method='diff'):
         if(method=='diff'):
@@ -334,14 +334,7 @@ class TDM:
             dist_to_goal = self.compute_dist_to_goal(o2,g,self.dist_metric)
             q_pi_targ = torch.min(q1_pi_targ,q2_pi_targ)
             backup = ((h-1)==0).view(-1,1)*(-1)*dist_to_goal + ((h-1)!=0).view(-1,1)*q_pi_targ
-            # if self.method=='original': 
-            #     q_pi_targ = torch.min(q1_pi_targ,q2_pi_targ)
-            #     backup = ((h-1)==0).view(-1,1)*-1*dist_to_goal + ((h-1)!=0).view(-1,1)*q_pi_targ
-            # else:
-            #     q_pi_targ = torch.max(q1_pi_targ,q2_pi_targ)
-            #     backup = ((h-1)==0).view(-1,1)*dist_to_goal + ((h-1)!=0).view(-1,1)*q_pi_targ
-
-            
+      
     
         # MSE loss against Bellman backup
         loss_q1 = ((q1 - backup)**2).mean()
@@ -363,12 +356,9 @@ class TDM:
         pi, logp_pi = self.ac.pi(torch.cat([o,g,h.view(-1,1)],axis=1))
         q1_pi = self.q_function_mod(self.ac.q1,o,g,(h).view(-1,1),pi,method=self.method)
         q2_pi = self.q_function_mod(self.ac.q2,o,g,(h).view(-1,1),pi,method=self.method)
-        # q1_pi = self.ac.q1(torch.cat([o,g,h.view(-1,1)],axis=1), pi)
-        # q2_pi = self.ac.q2(torch.cat([o,g,h.view(-1,1)],axis=1), pi)
-        q_pi = torch.min(q1_pi, q2_pi)
-        # q_pi = -torch.abs(torch.min(q1_pi, q2_pi)+o.detach()-g.detach())
 
-        # q_pi =  - torch.abs(self.ac.q1(torch.cat([o,g,h.view(-1,1)],axis=1), pi)-g.detach())
+        q_pi = torch.min(q1_pi, q2_pi)
+
 
         loss_pi = (self.alpha * logp_pi.view(-1,1) - q_pi.sum(1)).mean()
         # Useful info for logging
@@ -539,7 +529,7 @@ class TDM:
                     self.logger.dump_tabular()
 
 
-            # self.replay_buffer.finish_episode(horizon)
+            self.replay_buffer.finish_episode(horizon)
 
             if(e%1000==0):
                 print(obs_list)
