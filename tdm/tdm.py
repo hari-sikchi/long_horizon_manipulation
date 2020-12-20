@@ -9,8 +9,8 @@ import core as core
 from utils.logx import EpochLogger
 import torch.nn.functional as F
 import math
+
 device = torch.device("cpu")
-# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class ReplayBuffer:
@@ -293,7 +293,7 @@ class TDM:
         
         self.eval_freq= 100
 
-        self.dist_metric = 'wrap' # ['wrap','eucledian']
+        self.dist_metric = 'eucledian' # ['wrap','eucledian']
         self.method = 'diff' #['diff','next_state', 'original']
 
     def compute_dist_to_goal(self,o,g,metric='wrap'):
@@ -319,8 +319,6 @@ class TDM:
 
         q1 = self.q_function_mod(self.ac.q1,o,g,(h).view(-1,1),a,method=self.method)
         q2 = self.q_function_mod(self.ac.q2,o,g,(h).view(-1,1),a,method=self.method)
-        # q1 = self.ac.q1(torch.cat([o,g,h.view(-1,1)],axis=1),a)
-        # q2 = self.ac.q2(torch.cat([o,g,h.view(-1,1)],axis=1),a)
 
         # Bellman backup for Q functions
         with torch.no_grad():
@@ -439,7 +437,6 @@ class TDM:
             for t in range(horizon,0,-1):   
                 a = self.get_action(np.concatenate((o,goal,np.array([t]))),True)
                 q_val = self.q_function_mod(self.ac.q1,torch.as_tensor(o.reshape(1,-1), dtype=torch.float32),torch.as_tensor(goal.reshape(1,-1), dtype=torch.float32),torch.as_tensor([t], dtype=torch.float32).view(-1,1),torch.as_tensor(a.reshape(1,-1), dtype=torch.float32),method=self.method).detach().cpu().numpy()
-                # q_val = self.get_q_value(np.concatenate((o,goal,np.array([t]))).reshape(1,-1), a.reshape(1,-1)).detach().cpu().numpy() + o.reshape(1,-1)
                 q_values.append(q_val)
                 o, r, d, _ = self.test_env.step(a)
                 ep_ret += r
@@ -447,11 +444,7 @@ class TDM:
                     goal_reached=True
             if(goal_reached):
                 goal_reaches+=1
-            # import ipdb;ipdb.set_trace()
             q_errors = np.sum(np.abs(np.array(q_values).squeeze() +  np.abs(o-goal).reshape(1,-1)),axis=1)
-            # q_errors = np.sum(np.abs(np.abs(np.array(q_values).squeeze()-goal.reshape(1,-1)) - np.abs(o-goal).reshape(1,-1)),axis=1)
-            # q_errors = np.abs(np.abs(q_values-goal)-np.abs(o-goal))
-            # q_errors = np.abs(np.array(q_values).squeeze()+np.abs(o-goal).reshape(1,-1))
             self.logger.store(TDMError=np.mean(q_errors),TestEpRet=ep_ret)
         self.logger.store(GoalReach=goal_reaches/self.num_test_episodes) 
 
@@ -531,6 +524,7 @@ class TDM:
 
             self.replay_buffer.finish_episode(horizon)
 
-            if(e%1000==0):
+            if(e%100==0):
+            #     self.env.plot_trajectory(np.array(obs_list),goal,'Spiral7x7',index=e)
                 print(obs_list)
-                print("Goal is: {}".format(goal))
+                # print("Goal is: {}".format(goal))

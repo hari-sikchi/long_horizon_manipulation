@@ -272,6 +272,8 @@ class PointEnv(gym.Env):
     (height, width) = self._walls.shape
     self._height = height
     self._width = width
+    self.height_p = height
+    self.width_p = width
     self._action_noise = action_noise
 	# Define action space and observation space
     self.action_space = gym.spaces.Box(
@@ -315,7 +317,13 @@ class PointEnv(gym.Env):
     if j == self._width:
       j -= 1
     return (i, j)
-  
+
+  def is_blocked(self, state):
+    if not self.observation_space.contains(state):
+      return True
+    (i, j) = self._discretize_state(state)
+    return (self._walls[i, j] == 1)
+   
   def _is_blocked(self, state):
     if not self.observation_space.contains(state):
       return True
@@ -651,7 +659,7 @@ class PointNavEnv(gym.GoalEnv):
   """Wrapper that appends goal to state produced by environment."""
 
   
-  def __init__(self, prob_constraint=0.8, min_dist=0, max_dist=4,
+  def __init__(self, prob_constraint=0.5, min_dist=0, max_dist=8,
                threshold_distance=1.0):
     """Initialize the environment.
 
@@ -670,7 +678,7 @@ class PointNavEnv(gym.GoalEnv):
     self._prob_constraint = prob_constraint
     self._min_dist = min_dist
     self._max_dist = max_dist
-    self.env = PointEnv(walls='Small',resize_factor=1)
+    self.env = PointEnv(walls='Spiral7x7',resize_factor=10)
     self._duration = 1000
     self._max_episode_length = 30 # TODO check
     self._step_count = None
@@ -688,7 +696,18 @@ class PointNavEnv(gym.GoalEnv):
         high=np.array([1.0, 1.0]),
         dtype=np.float32)
     self.env.reset()
-  
+
+  def denormalize_obs(self, obs):
+    return np.array([
+        obs[0] *float(self.env._height),
+        obs[1] * float(self.env._width)
+    ])
+
+  def normalize_obs(self, obs):
+    obs[:,0]/=float(self.env._height)
+    obs[:,1]/=float(self.env._width)
+    return obs
+
   def _normalize_obs(self, obs):
     return np.array([
         obs[0] / float(self.env._height),
@@ -696,7 +715,7 @@ class PointNavEnv(gym.GoalEnv):
     ])
 
   def sample_random_goal(self):
-    return self._goal
+    return self._normalize_obs(self._goal)
 
 #   def reset(self):
 #     self._step_count = 0
@@ -796,7 +815,18 @@ class PointNavEnv(gym.GoalEnv):
     return np.max(apsp[np.isfinite(apsp)])
 
 
-
+  def plot_trajectory(self,obs_vec,goal,wall_name,index=1):
+    walls = WALLS[wall_name]
+    plot_walls(walls)
+    plt.plot(obs_vec[:, 0], obs_vec[:, 1], 'b-o', alpha=0.3)
+    plt.scatter([obs_vec[0, 0]], [obs_vec[0, 1]], marker='+',
+            color='red', s=200, label='start') 
+    plt.scatter([obs_vec[-1, 0]], [obs_vec[-1, 1]], marker='+',
+            color='green', s=200, label='end')
+    plt.scatter([goal[0]], [goal[1]], marker='*',
+            color='green', s=200, label='goal')
+    plt.savefig("data/Spiral_resize2_s0/Hello1_"+str(index)+".png")
+    # plt.clf()
 
 class NonTerminatingTimeLimit(gym.Wrapper):
   """Resets the environment without setting done = True.
@@ -856,7 +886,9 @@ def plot_trajectory(obs_vec,goal,wall_name,index=1):
               color='green', s=200, label='end')
   plt.scatter([goal[0]], [goal[1]], marker='*',
               color='green', s=200, label='goal')
-  plt.savefig("Traj_"+str(index)+".png")
+
+  plt.savefig("/Users/harshit/work/git/long_horizon_manipulation/CEMTraj_"+str(index)+".png")
+  plt.savefig("cem_"+str(index)+".png")
 
 
 def env_load_fn(environment_name,
