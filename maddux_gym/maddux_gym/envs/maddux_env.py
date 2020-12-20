@@ -23,10 +23,26 @@ class MadduxEnv(gym.Env):
         super(MadduxEnv, self).__init__()
 
         # maddux env
-        obstacles = []
+        # obstacles = []
         obstacles = [Obstacle([1, 2, 1], [2, 2.5, 1.5]),
-                     Obstacle([3, 2, 1], [4, 2.5, 1.5]),
-                     Obstacle([5, 6, 1], [0, 3, 1.5])]
+                     Obstacle([3, 2, 1], [4, 2.5, 1.5])]
+
+        # obstacles = [Obstacle([1, 2, 1], [2, 2.5, 1.5]),
+        #              Obstacle([3, 2, 1], [4, 2.5, 1.5]),
+        #              Obstacle([0, 0, 1], [1,1.5, 2.5]), ]
+
+        # obstacles = [Obstacle([1, 2, 1], [2, 2.5, 1.5]),
+        #              Obstacle([3, 2, 1], [4, 2.5, 1.5]),
+        #              Obstacle([0, 0, 1], [1,1.5, 2.5]),
+        #              Obstacle([6, 0, 1], [7,1.5, 2.5]), ]
+
+
+        # obstacles = [Obstacle([1, 2, 1], [2, 2.5, 1.5]),
+        #              Obstacle([3, 2, 1], [4, 2.5, 1.5]),
+        #              Obstacle([0, 0, 1], [1,1.5, 2.5]),
+        #              Obstacle([6, 0, 1], [7,1.5, 2.5]),
+        #              Obstacle([3, 0, 4], [4,1.5, 5.5]), ]
+
         # ball = Ball([2.5, 2.5, 2.0], 0.25)
 
 

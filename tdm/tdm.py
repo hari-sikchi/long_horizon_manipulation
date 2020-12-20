@@ -455,6 +455,8 @@ class TDM:
         start_time = time.time()
         o, ep_ret, ep_len = self.env.reset(), 0, 0
         timesteps = 0
+        max_action = float(self.env.action_space.high[0])
+        action_dim = self.env.action_space.shape[0]
         for e in range(total_episodes):
             # Sample a goal
             o = self.env.reset()
@@ -468,6 +470,8 @@ class TDM:
                 # use the learned policy. 
                 if timesteps > self.start_steps:
                     a = self.get_action(np.concatenate((o,goal,np.array([t]))))
+                    a+= np.random.normal(0, max_action * 0.1, size=action_dim)
+                    a = a.clip(-max_action, max_action)
                 else:
                     a = self.env.action_space.sample()                
 

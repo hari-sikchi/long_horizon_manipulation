@@ -379,7 +379,7 @@ class PointEnv(gym.Env):
     dist = np.full((height, width, height, width), np.float('inf'))
     
 
-    for ((i1, j1), dist_dict) in nx.shortest_path_length(g).items():
+    for ((i1, j1), dist_dict) in nx.shortest_path_length(g):
         for ((i2, j2), d) in dist_dict.items():
             dist[i1, j1, i2, j2] = d
     return dist
