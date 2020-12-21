@@ -1,0 +1,504 @@
+from copy import deepcopy
+import itertools
+import numpy as np
+import torch
+from torch.optim import Adam
+import gym
+import time
+import sys 
+sys.path.append('../maddux_gym/maddux_gym/')
+sys.path.append('../tdm/')
+sys.path.append('../')
+import core as core
+from logx import EpochLogger
+import torch.nn.functional as F
+import math
+device = torch.device("cpu")
+# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+class ReplayBuffer:
+    """
+    A simple FIFO experience replay buffer for SAC agents.
+    """
+
+    def __init__(self, obs_dim, act_dim, size):
+        self.obs_buf = np.zeros(core.combined_shape(size, obs_dim), dtype=np.float32)
+        self.obs2_buf = np.zeros(core.combined_shape(size, obs_dim), dtype=np.float32)
+        self.goal_buf = np.zeros(core.combined_shape(size, act_dim), dtype=np.float32)
+        self.horizon = np.zeros(size, dtype=np.float32)
+        self.act_buf = np.zeros(core.combined_shape(size, act_dim), dtype=np.float32)
+        self.rew_buf = np.zeros(size, dtype=np.float32)
+        self.done_buf = np.zeros(size, dtype=np.float32)
+        self.ptr, self.size, self.max_size = 0, 0, size
+
+    def store(self, obs, act, rew, next_obs, goal, horizon, done):
+        self.obs_buf[self.ptr] = obs
+        self.obs2_buf[self.ptr] = next_obs
+        self.goal_buf[self.ptr] = goal
+        self.horizon[self.ptr] = horizon
+        self.act_buf[self.ptr] = act
+        self.rew_buf[self.ptr] = rew
+        self.done_buf[self.ptr] = done
+        self.ptr = (self.ptr+1) % self.max_size
+        self.size = min(self.size+1, self.max_size)
+
+    def sample_batch(self, batch_size=32, true_goal_ratio = 0.99):
+        idxs = np.random.randint(0, self.size, size=batch_size)
+        batch = dict(obs=self.obs_buf[idxs],
+                     obs2=self.obs2_buf[idxs],
+                     goal = self.goal_buf[idxs],
+                     horizon = self.horizon[idxs],
+                     act=self.act_buf[idxs],
+                     rew=self.rew_buf[idxs],
+                     done=self.done_buf[idxs])
+        return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in batch.items()}
+
+class EpisodicReplayBuffer:
+    """
+    A simple FIFO experience replay buffer for SAC agents.
+    """
+
+    def __init__(self, obs_dim, act_dim, size, max_horizon):
+        self.obs_dim = obs_dim
+        self.act_dim = act_dim
+
+        self.max_horizon = max_horizon+1
+        self.obs_buf = np.zeros(core.combined_shape(size, obs_dim*self.max_horizon), dtype=np.float32)
+        self.obs2_buf = np.zeros(core.combined_shape(size, obs_dim*self.max_horizon), dtype=np.float32)
+        self.goal_buf = np.zeros(core.combined_shape(size, act_dim*self.max_horizon), dtype=np.float32)
+        self.horizon = np.zeros((size,self.max_horizon), dtype=np.float32)
+        self.act_buf = np.zeros(core.combined_shape(size, act_dim*self.max_horizon), dtype=np.float32)
+        self.rew_buf = np.zeros((size,self.max_horizon), dtype=np.float32)
+        self.max_horizon_buf = np.zeros((size), dtype=np.float32)
+        self.done_buf = np.zeros((size,self.max_horizon), dtype=np.float32)
+        self.episode_ptr, self.ptr, self.size, self.max_size = 0, 0, 0, size
+
+    def store(self, obs, act, rew, next_obs, goal, horizon, done):
+        self.obs_buf[self.episode_ptr, self.ptr*self.obs_dim:(self.ptr+1)*self.obs_dim] = obs
+        self.obs2_buf[self.episode_ptr,self.ptr*self.obs_dim:(self.ptr+1)*self.obs_dim] = next_obs
+        self.goal_buf[self.episode_ptr,self.ptr*self.obs_dim:(self.ptr+1)*self.obs_dim] = goal
+        self.horizon[self.episode_ptr,self.ptr] = horizon
+        self.act_buf[self.episode_ptr,self.ptr*self.act_dim:(self.ptr+1)*self.act_dim] = act
+        self.rew_buf[self.episode_ptr,self.ptr] = rew
+        self.done_buf[self.episode_ptr,self.ptr] = done
+        self.ptr = (self.ptr+1) % self.max_size
+        
+
+    def finish_episode(self, max_horizon):
+        self.max_horizon_buf[self.episode_ptr]=max_horizon
+        self.episode_ptr+=1
+        self.ptr = 0
+        self.size = (self.size+1) % self.max_size
+
+
+    # Sample with goal relabelling
+    def sample_batch(self, batch_size=32, true_goal_ratio = 0.99):
+
+        episode_idx = np.random.randint(0, self.size, size=batch_size)
+        random_floats = (np.random.uniform(size=batch_size).reshape(-1) * self.max_horizon_buf[episode_idx])
+        state_idx = random_floats.astype(int)
+        future_goals = (np.random.uniform(size=batch_size).reshape(-1) * (self.max_horizon_buf[episode_idx]-state_idx)+state_idx).astype(int)
+        future_goals = np.minimum(future_goals,self.max_horizon_buf[episode_idx]-1).astype(int)
+        rand_horizons = np.random.randint(1,self.max_horizon,batch_size)
+        true_goal_binary = np.random.uniform(size=batch_size)<true_goal_ratio
+        obs = np.zeros((batch_size,self.obs_dim))
+        obs2 = np.zeros((batch_size,self.obs_dim))
+        goal = np.zeros((batch_size,self.obs_dim))
+        horizon = np.zeros((batch_size))
+        act = np.zeros((batch_size,self.act_dim))
+        rew = np.zeros((batch_size))
+        done = np.zeros((batch_size))
+        for i in range(batch_size):
+            obs[i,:] = self.obs_buf[episode_idx[i],state_idx[i]*self.obs_dim:(state_idx[i]+1)*self.obs_dim]
+            obs2[i,:] = self.obs2_buf[episode_idx[i],state_idx[i]*self.obs_dim:(state_idx[i]+1)*self.obs_dim]
+            act[i,:] = self.act_buf[episode_idx[i],state_idx[i]*self.act_dim:(state_idx[i]+1)*self.act_dim]
+            goal[i,:] = true_goal_binary[i] * self.goal_buf[episode_idx[i],state_idx[i]*self.obs_dim:(state_idx[i]+1)*self.obs_dim]+\
+                        (1-true_goal_binary[i])*self.obs_buf[episode_idx[i],future_goals[i]*self.obs_dim:(future_goals[i]+1)*self.obs_dim]
+            
+            horizon[i] = true_goal_binary[i] * self.horizon[episode_idx[i],state_idx[i]] + (1-true_goal_binary[i])*rand_horizons[i]
+            rew = self.rew_buf[episode_idx[i],state_idx[i]]
+            done = self.done_buf[episode_idx[i],state_idx[i]]
+
+        batch = dict(obs=obs,
+                     obs2=obs2,
+                     goal = goal,
+                     horizon = horizon,
+                     act=act,
+                     rew=rew,
+                     done=done)
+
+
+
+        return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in batch.items()}
+
+
+
+class TDM:
+
+    def __init__(self, env_fn, actor_critic=core.MLPtdmActorCritic, ac_kwargs=dict(), seed=0, 
+        steps_per_epoch=1000, epochs=1000, replay_size=int(100000), gamma=0.99, 
+        polyak=0.995, lr=1e-3, p_lr=1e-3, alpha=0.0, batch_size=100, start_steps=1000, 
+        update_after=0, update_every=50, num_test_episodes=20, max_ep_len=1000, 
+        logger_kwargs=dict(), save_freq=1, algo='SAC'):
+        """
+        Soft Actor-Critic (SAC)
+
+
+        Args:
+            env_fn : A function which creates a copy of the environment.
+                The environment must satisfy the OpenAI Gym API.
+
+            actor_critic: The constructor method for a PyTorch Module with an ``act`` 
+                method, a ``pi`` module, a ``q1`` module, and a ``q2`` module.
+                The ``act`` method and ``pi`` module should accept batches of 
+                observations as inputs, and ``q1`` and ``q2`` should accept a batch 
+                of observations and a batch of actions as inputs. When called, 
+                ``act``, ``q1``, and ``q2`` should return:
+
+                ===========  ================  ======================================
+                Call         Output Shape      Description
+                ===========  ================  ======================================
+                ``act``      (batch, act_dim)  | Numpy array of actions for each 
+                                            | observation.
+                ``q1``       (batch,)          | Tensor containing one current estimate
+                                            | of Q* for the provided observations
+                                            | and actions. (Critical: make sure to
+                                            | flatten this!)
+                ``q2``       (batch,)          | Tensor containing the other current 
+                                            | estimate of Q* for the provided observations
+                                            | and actions. (Critical: make sure to
+                                            | flatten this!)
+                ===========  ================  ======================================
+
+                Calling ``pi`` should return:
+
+                ===========  ================  ======================================
+                Symbol       Shape             Description
+                ===========  ================  ======================================
+                ``a``        (batch, act_dim)  | Tensor containing actions from policy
+                                            | given observations.
+                ``logp_pi``  (batch,)          | Tensor containing log probabilities of
+                                            | actions in ``a``. Importantly: gradients
+                                            | should be able to flow back into ``a``.
+                ===========  ================  ======================================
+
+            ac_kwargs (dict): Any kwargs appropriate for the ActorCritic object 
+                you provided to SAC.
+
+            seed (int): Seed for random number generators.
+
+            steps_per_epoch (int): Number of steps of interaction (state-action pairs) 
+                for the agent and the environment in each epoch.
+
+            epochs (int): Number of epochs to run and train agent.
+
+            replay_size (int): Maximum length of replay buffer.
+
+            gamma (float): Discount factor. (Always between 0 and 1.)
+
+            polyak (float): Interpolation factor in polyak averaging for target 
+                networks. Target networks are updated towards main networks 
+                according to:
+
+                .. math:: \\theta_{\\text{targ}} \\leftarrow 
+                    \\rho \\theta_{\\text{targ}} + (1-\\rho) \\theta
+
+                where :math:`\\rho` is polyak. (Always between 0 and 1, usually 
+                close to 1.)
+
+            lr (float): Learning rate (used for both policy and value learning).
+
+            alpha (float): Entropy regularization coefficient. (Equivalent to 
+                inverse of reward scale in the original SAC paper.)
+
+            batch_size (int): Minibatch size for SGD.
+
+            start_steps (int): Number of steps for uniform-random action selection,
+                before running real policy. Helps exploration.
+
+            update_after (int): Number of env interactions to collect before
+                starting to do gradient descent updates. Ensures replay buffer
+                is full enough for useful updates.
+
+            update_every (int): Number of env interactions that should elapse
+                between gradient descent updates. Note: Regardless of how long 
+                you wait between updates, the ratio of env steps to gradient steps 
+                is locked to 1.
+
+            num_test_episodes (int): Number of episodes to test the deterministic
+                policy at the end of each epoch.
+
+            max_ep_len (int): Maximum length of trajectory / episode / rollout.
+
+            logger_kwargs (dict): Keyword args for EpochLogger.
+
+            save_freq (int): How often (in terms of gap between epochs) to save
+                the current policy and value function.
+
+            """
+
+        self.logger = EpochLogger(**logger_kwargs)
+        self.logger.save_config(locals())
+
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+
+        self.env, self.test_env = env_fn(), env_fn()
+        self.obs_dim = self.env.observation_space.shape
+        self.act_dim = self.env.action_space.shape[0]
+
+        # Action limit for clamping: critically, assumes all dimensions share the same bound!
+        self.act_limit = self.env.action_space.high[0]
+
+        # Create actor-critic module and target networks
+        self.ac = actor_critic(self.env.observation_space, self.env.action_space,special_policy='tdm', **ac_kwargs)
+        self.ac_targ = deepcopy(self.ac)
+        self.gamma  = gamma
+
+
+        # Freeze target networks with respect to optimizers (only update via polyak averaging)
+        for p in self.ac_targ.parameters():
+            p.requires_grad = False
+            
+        # List of parameters for both Q-networks (save this for convenience)
+        self.q_params = itertools.chain(self.ac.q1.parameters(), self.ac.q2.parameters())
+        self.max_horizon = 30
+        # Experience buffer
+        # self.replay_buffer = ReplayBuffer(obs_dim=self.obs_dim[0], act_dim=self.act_dim, size=replay_size)
+        #self.replay_buffer = EpisodicReplayBuffer(obs_dim=self.obs_dim[0], act_dim=self.act_dim, size=replay_size,max_horizon=self.max_horizon)
+
+        self.replay_buffer = ReplayBuffer(obs_dim=self.obs_dim[0], act_dim=self.act_dim, size=replay_size)
+
+        # Count variables (protip: try to get a feel for how different size networks behave!)
+        var_counts = tuple(core.count_vars(module) for module in [self.ac.pi, self.ac.q1, self.ac.q2])
+        self.logger.log('\nNumber of parameters: \t pi: %d, \t q1: %d, \t q2: %d\n'%var_counts)
+        self.algo = algo
+        self.start_steps = start_steps
+
+
+        self.alpha = alpha # CWR does not require entropy in Q evaluation
+        self.target_update_freq = 1
+        self.p_lr = 1e-3
+        self.lr = 1e-3
+
+        # Set up optimizers for policy and q-function
+        self.pi_optimizer = Adam(self.ac.pi.parameters(), lr=self.p_lr)
+        self.q_optimizer = Adam(self.q_params, lr=self.lr)
+        self.num_test_episodes = num_test_episodes
+        self.max_ep_len = self.env._max_episode_length
+        self.epochs= epochs
+        self.steps_per_epoch = steps_per_epoch
+        self.update_after = update_after
+        self.update_every = update_every
+        self.batch_size = batch_size
+        self.save_freq = save_freq
+        self.polyak = polyak
+        # Set up model saving
+        self.logger.setup_pytorch_saver(self.ac)
+        
+        self.eval_freq= 100
+
+        self.dist_metric = 'wrap' # ['wrap','eucledian']
+        self.method = 'diff' #['diff','next_state', 'original']
+
+        from rrt import RRTPolicy
+        self.policy = RRTPolicy(self.env)
+
+    def compute_dist_to_goal(self,o,g,metric='wrap'):
+        if metric=='wrap':
+            dist_to_goal = torch.min(torch.abs(o-g), torch.abs(2*math.pi - torch.max(o,g) + torch.min(o,g)))
+        else:
+            dist_to_goal = torch.abs(o-g)
+        return dist_to_goal
+
+    # method = ['diff','next_state', 'original']
+    def q_function_mod(self,q, o, g, t,method='diff'):
+        if(method=='diff'):
+            return -torch.abs(q(torch.cat([o,g,t],axis=1))+o-g)
+        elif(method=='next_state'):
+            return -torch.abs(q(torch.cat([o,g,t],axis=1))-g)
+        else:
+            return q(torch.cat([o,g,t],axis=1),a)
+
+    # Set up function for computing SAC Q-losses
+    def compute_loss_q(self, data):
+        o, a, r, o2, d = data['obs'], data['act'], data['rew'], data['obs2'], data['done']
+        g,h = data['goal'],data['horizon']
+
+        q1 = self.q_function_mod(self.ac.q1,o,g,(h).view(-1,1),method=self.method)
+        q2 = self.q_function_mod(self.ac.q2,o,g,(h).view(-1,1),method=self.method)
+        # q1 = self.ac.q1(torch.cat([o,g,h.view(-1,1)],axis=1),a)
+        # q2 = self.ac.q2(torch.cat([o,g,h.view(-1,1)],axis=1),a)
+
+        # Bellman backup for Q functions
+        with torch.no_grad():
+
+            # Target Q-values
+            q1_pi_targ = self.q_function_mod(self.ac_targ.q1,o2,g,(h-1).view(-1,1),method=self.method)
+            # q1_pi_targ = torch.abs(self.ac_targ.q1(torch.cat([o2,g,(h-1).view(-1,1)],axis=1), a2)+o2-g)
+            q2_pi_targ = self.q_function_mod(self.ac_targ.q2,o2,g,(h-1).view(-1,1),method=self.method)
+            dist_to_goal = self.compute_dist_to_goal(o2,g,self.dist_metric)
+            q_pi_targ = torch.min(q1_pi_targ,q2_pi_targ)
+            backup = ((h-1)==0).view(-1,1)*(-1)*dist_to_goal + ((h-1)!=0).view(-1,1)*q_pi_targ
+      
+    
+        # MSE loss against Bellman backup
+        loss_q1 = ((q1 - backup)**2).mean()
+        loss_q2 = ((q2 - backup)**2).mean()
+        loss_q = loss_q1 + loss_q2
+        self.logger.store(TrainTDMLoss=loss_q) 
+        # Useful info for logging
+        q_info = dict(Q1Vals=q1.detach().numpy(),
+                      Q2Vals=q2.detach().numpy())
+
+        return loss_q, q_info
+
+
+
+    def update(self,data, update_timestep):
+        # First run one gradient descent step for Q1 and Q2
+        
+        self.q_optimizer.zero_grad()
+        loss_q, q_info = self.compute_loss_q(data)
+        loss_q.backward()
+        self.q_optimizer.step()
+
+        # Record things
+        self.logger.store(LossQ=loss_q.item(), **q_info)
+
+        # Finally, update target networks by polyak averaging.
+        if update_timestep%self.target_update_freq==0:
+            with torch.no_grad():
+                for p, p_targ in zip(self.ac.parameters(), self.ac_targ.parameters()):
+                    # NB: We use an in-place operations "mul_", "add_" to update target
+                    # params, as opposed to "mul" and "add", which would make new tensors.
+                    p_targ.data.mul_(self.polyak)
+                    p_targ.data.add_((1 - self.polyak) * p.data)
+
+    def get_action(self, start, goal):
+        return self.policy.action(start, goal)*5
+
+    def get_q_value(self,o,a):
+        return self.ac.q1(torch.as_tensor(o, dtype=torch.float32), 
+                      torch.as_tensor(a, dtype=torch.float32))
+
+    def test_tdm(self):
+        goal_reaches = 0
+        for j in range(self.num_test_episodes):
+            goal = self.test_env.sample_random_goal()    
+            horizon = np.random.randint(1,self.max_horizon)
+            q_values = []
+            o, d, ep_ret, ep_len = self.test_env.reset(), False, 0, 0
+            goal_reached = False
+            for t in range(horizon,0,-1):   
+                a = self.get_action(o, goal)
+                q_val = self.q_function_mod(self.ac.q1,torch.as_tensor(o.reshape(1,-1), dtype=torch.float32),torch.as_tensor(goal.reshape(1,-1), dtype=torch.float32),torch.as_tensor([t], dtype=torch.float32).view(-1,1),method=self.method).detach().cpu().numpy()
+                # q_val = self.get_q_value(np.concatenate((o,goal,np.array([t]))).reshape(1,-1), a.reshape(1,-1)).detach().cpu().numpy() + o.reshape(1,-1)
+                q_values.append(q_val)
+                o, r, d, _ = self.test_env.step(a)
+                ep_ret += r
+                if((o-goal).sum()<(0.15*self.obs_dim[0])):
+                    goal_reached=True
+            if(goal_reached):
+                goal_reaches+=1
+            # import ipdb;ipdb.set_trace()
+            q_errors = np.sum(np.abs(np.array(q_values).squeeze() +  np.abs(o-goal).reshape(1,-1)),axis=1)
+            # q_errors = np.sum(np.abs(np.abs(np.array(q_values).squeeze()-goal.reshape(1,-1)) - np.abs(o-goal).reshape(1,-1)),axis=1)
+            # q_errors = np.abs(np.abs(q_values-goal)-np.abs(o-goal))
+            # q_errors = np.abs(np.array(q_values).squeeze()+np.abs(o-goal).reshape(1,-1))
+            self.logger.store(TDMError=np.mean(q_errors),TestEpRet=ep_ret)
+        self.logger.store(GoalReach=goal_reaches/self.num_test_episodes) 
+
+
+    def run(self):
+        total_steps = self.steps_per_epoch * self.epochs
+        total_episodes = 1000000
+        start_time = time.time()
+        o, ep_ret, ep_len = self.env.reset(), 0, 0
+        timesteps = 0
+        for e in range(total_episodes):
+            print(f"Episode {e}")
+            # Sample a goal
+            o = self.env.reset()
+            start = o
+            goal = self.env.sample_random_goal()
+            # Sample a horizon
+            horizon = np.random.randint(1,self.max_horizon)
+            obs_list = []
+            for t in range(horizon,0,-1):
+                a = self.get_action(o, goal)              
+
+                # Step the env
+                o2, r, d, _ = self.env.step(a)
+                ep_ret += r
+                ep_len += 1
+                timesteps+=1
+                
+                self.replay_buffer.store(o, a, r, o2, goal, t, d)
+                obs_list.append(o)
+                
+                o = o2
+
+                # Update handling
+                if timesteps >= self.update_after and timesteps % self.update_every == 0:
+                    for j in range(self.update_every):
+                        batch = self.replay_buffer.sample_batch(self.batch_size,true_goal_ratio=1.0)
+                        self.update(data=batch,update_timestep=t)
+
+                # End of epoch handling
+                if (timesteps+1) % self.steps_per_epoch == 0:
+                    epoch = timesteps//self.steps_per_epoch
+
+                    # Save model
+                    
+                    self.logger.save_state({'env': self.env}, None)
+
+                    # Test the performance of the deterministic version of the agent.
+                    self.test_tdm()
+                    # Log info about epoch
+                    self.logger.log_tabular('Epoch', epoch)
+                    self.logger.log_tabular('Episodes', e)
+                    self.logger.log_tabular('TestEpRet', with_min_and_max=True)
+                    self.logger.log_tabular('TDMError', with_min_and_max=True)
+                    self.logger.log_tabular('TrainTDMLoss', with_min_and_max=True)
+                    self.logger.log_tabular('GoalReach', average_only=True)
+                    self.logger.log_tabular('TotalUpdates', timesteps)
+                    self.logger.log_tabular('Q1Vals', with_min_and_max=True)
+                    self.logger.log_tabular('Q2Vals', with_min_and_max=True)
+                    self.logger.log_tabular('LossQ', average_only=True)
+                    self.logger.log_tabular('Time', time.time()-start_time)
+                    self.logger.dump_tabular()
+
+
+            #self.replay_buffer.finish_episode(horizon)
+
+            if(e%1000==0):
+                print(obs_list)
+                print("Goal is: {}".format(goal))
+
+import tdm
+import argparse
+import gym
+import maddux_gym
+import sys
+sys.path.append('maddux_gym/maddux_gym/')
+from envs.maddux_env import MadduxEnv
+
+if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser()
+    # Policy name (TD3, DDPG or OurDDPG)
+    parser.add_argument("--algorithm", default="SAC")
+    parser.add_argument("--env", default="hopper-random-v0")
+    parser.add_argument("--exp_name", default="data/tdm-obs2")
+    parser.add_argument("--seed", default=0, type=int)
+
+    args = parser.parse_args()
+    # env_fn = lambda:gym.make(args.env)
+    env_fn = lambda:MadduxEnv(render=False)
+
+
+    agent = tdm.TDM(env_fn, logger_kwargs={'output_dir':args.exp_name+'_s'+str(args.seed), 'exp_name':args.exp_name},batch_size=256, seed=args.seed, algo=args.algorithm) 
+
+    agent.run()

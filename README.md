@@ -28,3 +28,11 @@ python tdm/subgoal_planner_maddux.py
 
 
 ## Run RRT between subgoals and generate statistics
+```
+# For point_nav   
+python tdm/rrt_pointnav.py     
+    
+# For Maddux   
+python tdm/rrt_maddux.py   
+
+```
